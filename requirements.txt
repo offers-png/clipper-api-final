@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 python-multipart
-moviepy
+moviepy==1.0.3
+imageio-ffmpeg
 python-dotenv
