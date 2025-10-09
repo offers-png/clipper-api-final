@@ -6,3 +6,5 @@ imageio-ffmpeg==0.4.9
 numpy==1.26.4
 decorator==4.4.2
 proglog==0.1.10
+python-multipart==0.0.9
+
