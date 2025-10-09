@@ -1,33 +1,62 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-import uuid, os
+from moviepy.editor import VideoFileClip
+import os
+import traceback
 
 app = FastAPI()
 
+# === SETTINGS ===
+UPLOAD_DIR = "uploads"
+MAX_FILE_SIZE_MB = 50
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def validate_file_size(file):
+    file.file.seek(0, 2)  # go to end of file
+    size_mb = file.file.tell() / (1024 * 1024)
+    file.file.seek(0)  # reset pointer
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise HTTPException(status_code=413, detail="File too large. Max 50 MB allowed.")
+
+
 @app.post("/clip")
-async def clip(video_file: UploadFile = File(...)):
-    # Save upload
-    input_path = f"/tmp/{uuid.uuid4()}_{video_file.filename}"
-    with open(input_path, "wb") as f:
-        f.write(await video_file.read())
+async def make_clip(
+    video_file: UploadFile = File(...),
+    start: float = 0,
+    end: float = 5
+):
+    try:
+        # Validate file size
+        validate_file_size(video_file)
 
-    clip = VideoFileClip(input_path)
+        # Save uploaded file
+        input_path = os.path.join(UPLOAD_DIR, video_file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await video_file.read())
 
-    # Watermark
-    txt_clip = TextClip("@ClippedBySal", fontsize=50, color="white", stroke_color="black", stroke_width=2)
-    txt_clip = txt_clip.set_duration(clip.duration).set_position(("center","bottom"))
+        # Prepare output filename
+        name, ext = os.path.splitext(video_file.filename)
+        output_path = os.path.join(UPLOAD_DIR, f"{name}_clip.mp4")
 
-    final = CompositeVideoClip([clip, txt_clip])
-    output_name = f"{uuid.uuid4()}_watermarked.mp4"
-    output_path = f"/tmp/{output_name}"
-    final.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        # Process the video
+        with VideoFileClip(input_path) as video:
+            new_clip = video.subclip(start, end)
+            new_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
-    # URL back to your service (your Render app URL)
-    file_url = f"https://clipper-api-final.onrender.com/files/{output_name}"
-    return {"download_url": file_url}
+        return {"message": "✅ Clip created successfully!", "output": f"/files/{os.path.basename(output_path)}"}
+
+    except Exception as e:
+        print("❌ ERROR:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/files/{filename}")
 async def serve_file(filename: str):
-    return FileResponse(f"/tmp/{filename}", filename=filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    return FileResponse(file_path)
 
