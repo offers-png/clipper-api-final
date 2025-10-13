@@ -1,59 +1,71 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from moviepy.editor import VideoFileClip
-import uuid, os
+import os
+import shutil
+import tempfile
+import subprocess
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse, JSONResponse
+from typing import Optional
 
-app = FastAPI()
+app = FastAPI(title="Clipper Agent", version="1.0.0")
 
-JOBS = {}  # In-memory job tracking
-OUTPUT_DIR = "files"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Try to import MoviePy, fallback to FFmpeg
+USE_MOVIEPY = True
+try:
+    from moviepy.editor import VideoFileClip, CompositeVideoClip, ImageClip
+except Exception:
+    USE_MOVIEPY = False
 
-@app.get("/")
-def root():
-    return {"message": "Clipped by Sal API is running"}
+def ensure_ffmpeg():
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found in PATH")
+    return ffmpeg
+
+def overlay_with_ffmpeg(input_path: str, output_path: str, watermark_path: Optional[str] = None):
+    ffmpeg = ensure_ffmpeg()
+    if watermark_path and os.path.exists(watermark_path):
+        cmd = [
+            ffmpeg, "-y", "-i", input_path, "-i", watermark_path,
+            "-filter_complex", "overlay=10:10", "-c:a", "copy", output_path
+        ]
+    else:
+        cmd = [ffmpeg, "-y", "-i", input_path, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", output_path]
+    run = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if run.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {run.stderr.decode(errors='ignore')[:300]}")
+
+def overlay_with_moviepy(input_path: str, output_path: str, watermark_path: Optional[str] = None):
+    clip = VideoFileClip(input_path)
+    if watermark_path and os.path.exists(watermark_path):
+        wm = ImageClip(watermark_path).set_duration(clip.duration).set_pos(("left", "top"))
+        final = CompositeVideoClip([clip, wm])
+    else:
+        final = clip
+    final.write_videofile(output_path, codec="libx264", audio_codec="aac", threads=os.cpu_count() or 2, logger=None)
+    clip.close()
+    if 'wm' in locals():
+        wm.close()
+
+@app.get("/health")
+def health():
+    return {"ok": True, "moviepy": USE_MOVIEPY}
 
 @app.post("/clip")
-async def make_clip(file: UploadFile = File(...), start: float = Form(...), end: float = Form(...)):
-    job_id = str(uuid.uuid4())
-    JOBS[job_id] = {"status": "processing"}
-    input_path = f"{OUTPUT_DIR}/{file.filename}"
-    output_path = f"{OUTPUT_DIR}/{file.filename.split('.')[0]}_clip.mp4"
-
+async def clip_video(file: UploadFile = File(...)):
     try:
-        # Save uploaded video
-        with open(input_path, "wb") as f:
-            f.write(await file.read())
+        with tempfile.TemporaryDirectory() as td:
+            src_path = os.path.join(td, "input.mp4")
+            out_path = os.path.join(td, "output.mp4")
+            wm_path = os.path.join(os.path.dirname(__file__), "watermark.png")
 
-        # Clip it
-        with VideoFileClip(input_path) as video:
-            new_clip = video.subclip(start, end)
-            new_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+            with open(src_path, "wb") as f:
+                f.write(await file.read())
 
-        JOBS[job_id] = {
-            "status": "done",
-            "output": output_path
-        }
+            if USE_MOVIEPY:
+                overlay_with_moviepy(src_path, out_path, wm_path)
+            else:
+                overlay_with_ffmpeg(src_path, out_path, wm_path)
 
-        return {"job_id": job_id, "status": "processing"}
-
+            return FileResponse(out_path, media_type="video/mp4", filename="clipped.mp4")
     except Exception as e:
-        JOBS[job_id] = {"status": "failed", "error": str(e)}
-        return {"error": str(e)}
-
-@app.get("/status/{job_id}")
-def check_status(job_id: str):
-    job = JOBS.get(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    if job["status"] == "done":
-        return {"status": "done", "download_url": f"/download/{job_id}"}
-    return {"status": job["status"]}
-
-@app.get("/download/{job_id}")
-def download(job_id: str):
-    job = JOBS.get(job_id)
-    if not job or "output" not in job:
-        return {"error": "Job not ready"}
-    return {
-        "download": f"https://clipper-api-final.onrender.com/{job['output']}"
-    }
+        return JSONResponse(status_code=500, content={"error": str(e)[:700]})
