@@ -1,40 +1,34 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from youtube_transcript_api import YouTubeTranscriptApi
-import re
-
-# ✅ Create app first
-app = FastAPI()
-
-# ✅ Allow frontend requests
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.post("/transcribe")
 async def transcribe(payload: dict):
     try:
-        # ✅ Extract video URL
+        import requests
+        import re
+        import json
+
         video_url = payload.get("url") or payload.get("video_url")
         if not video_url:
             return JSONResponse(status_code=400, content={"error": "Missing video URL"})
 
-        # ✅ Extract the YouTube video ID
         match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", video_url)
         if not match:
             return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
         video_id = match.group(1)
 
-        # ✅ Try to fetch transcript (all available languages and auto captions)
-        transcript = YouTubeTranscriptApi.list_transcripts(video_id).find_transcript(
-            ['en', 'en-US', 'en-GB', 'auto', 'es', 'fr', 'de', 'ar']
-        ).fetch()
+        # ✅ Backup caption source (unofficial)
+        captions_url = f"https://youtubetranscriptapi.vyom.tech/?video_id={video_id}"
+        response = requests.get(captions_url)
 
-        full_text = " ".join([entry["text"] for entry in transcript])
+        if response.status_code != 200:
+            return JSONResponse(status_code=404, content={"error": "Could not fetch captions. Subtitles might be disabled."})
+
+        data = response.json()
+        if "transcript" not in data:
+            return JSONResponse(status_code=404, content={"error": "No transcript found for this video."})
+
+        # ✅ Combine transcript text
+        full_text = " ".join([entry["text"] for entry in data["transcript"]])
+        if not full_text.strip():
+            return JSONResponse(status_code=404, content={"error": "Transcript is empty or unavailable."})
 
         return {
             "ok": True,
@@ -44,7 +38,3 @@ async def transcribe(payload: dict):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.get("/")
-def home():
-    return {"message": "Clipper AI backend is running!"}
