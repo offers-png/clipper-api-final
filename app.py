@@ -6,14 +6,15 @@ import os
 import shutil
 import tempfile
 import subprocess
+import re
 
 # ---------------------------------------------------------
-# 🚀 Clipper AI Backend - Full Fixed Version
+# 🚀 Clipper AI Backend - Full Version with Transcription
 # ---------------------------------------------------------
 
-app = FastAPI(title="Clipper Agent", version="1.0.1")
+app = FastAPI(title="Clipper Agent", version="1.1.0")
 
-# ✅ Enable CORS so your frontend can connect
+# ✅ Enable CORS (frontend connection)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,7 +24,7 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------
-# 🩺 Health check routes
+# 🩺 Health routes
 # ---------------------------------------------------------
 @app.get("/")
 def root():
@@ -104,20 +105,35 @@ async def clip_video(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)[:700]})
 
 # ---------------------------------------------------------
-# 🎧 Transcription endpoint (for your frontend)
+# 🎧 YouTube Transcription Endpoint (Real Logic)
 # ---------------------------------------------------------
+from youtube_transcript_api import YouTubeTranscriptApi
+
 @app.post("/transcribe")
 async def transcribe(payload: dict):
     video_url = payload.get("url") or payload.get("video_url")
     if not video_url:
-        return JSONResponse(status_code=400, content={"error": "Missing video_url"})
+        return JSONResponse(status_code=400, content={"error": "Missing video URL"})
 
-    # Placeholder logic (you can connect real YouTube transcription later)
-    return {
-        "ok": True,
-        "url": video_url,
-        "message": "Transcription started successfully!"
-    }
+    # Extract the YouTube video ID
+    match = re.search(r"(?:v=|be/)([a-zA-Z0-9_-]{11})", video_url)
+    if not match:
+        return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
+    video_id = match.group(1)
+
+    try:
+        # Fetch transcript
+        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+        full_text = " ".join([entry["text"] for entry in transcript])
+
+        return {
+            "ok": True,
+            "url": video_url,
+            "transcript": full_text[:5000]  # limit long responses
+        }
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ---------------------------------------------------------
 # ✅ Run locally if needed
