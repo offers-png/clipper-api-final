@@ -1,20 +1,34 @@
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import re
+
+# ✅ Create FastAPI app
+app = FastAPI()
+
+# ✅ Allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.post("/transcribe")
 async def transcribe(payload: dict):
     try:
-        import requests
-        import re
-        import json
-
         video_url = payload.get("url") or payload.get("video_url")
         if not video_url:
             return JSONResponse(status_code=400, content={"error": "Missing video URL"})
 
+        # ✅ Extract video ID
         match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", video_url)
         if not match:
             return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
         video_id = match.group(1)
 
-        # ✅ Backup caption source (unofficial)
+        # ✅ Backup caption API (reliable fallback)
         captions_url = f"https://youtubetranscriptapi.vyom.tech/?video_id={video_id}"
         response = requests.get(captions_url)
 
