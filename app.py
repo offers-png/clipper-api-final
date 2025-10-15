@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -29,11 +29,18 @@ async def transcribe(payload: dict):
             return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
         video_id = match.group(1)
 
-        # ✅ Fetch transcript (compatible with all stable versions)
-       transcript = YouTubeTranscriptApi.list_transcripts(video_id).find_transcript(['en', 'en-US', 'en-GB', 'auto']).fetch()
-       full_text = " ".join([entry["text"] for entry in transcript])
+        # ✅ Try to fetch transcript (all available languages and auto captions)
+        transcript = YouTubeTranscriptApi.list_transcripts(video_id).find_transcript(
+            ['en', 'en-US', 'en-GB', 'auto', 'es', 'fr', 'de', 'ar']
+        ).fetch()
 
-        return {"ok": True, "url": video_url, "transcript": full_text[:5000]}
+        full_text = " ".join([entry["text"] for entry in transcript])
+
+        return {
+            "ok": True,
+            "url": video_url,
+            "transcript": full_text[:5000]
+        }
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -41,5 +48,3 @@ async def transcribe(payload: dict):
 @app.get("/")
 def home():
     return {"message": "Clipper AI backend is running!"}
-
-
