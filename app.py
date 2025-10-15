@@ -1,3 +1,31 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# CORS: allow browser calls from anywhere (you can lock this later)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def root():
+    return {"ok": True, "message": "Clipper API"}
+
+@app.get("/health")
+def health():
+    return {"ok": True, "moviepy": True}
+
+@app.post("/clip")
+def clip(payload: dict):
+    video_url = payload.get("video_url")
+    # TODO: kick off your processing here
+    return {"ok": True, "received": video_url}
+
 import os
 import shutil
 import tempfile
@@ -69,3 +97,4 @@ async def clip_video(file: UploadFile = File(...)):
             return FileResponse(out_path, media_type="video/mp4", filename="clipped.mp4")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)[:700]})
+
