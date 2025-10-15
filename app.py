@@ -30,8 +30,8 @@ async def transcribe(payload: dict):
         video_id = match.group(1)
 
         # ✅ Fetch transcript (compatible with all stable versions)
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        full_text = " ".join([entry["text"] for entry in transcript])
+       transcript = YouTubeTranscriptApi.list_transcripts(video_id).find_transcript(['en', 'en-US', 'en-GB', 'auto']).fetch()
+       full_text = " ".join([entry["text"] for entry in transcript])
 
         return {"ok": True, "url": video_url, "transcript": full_text[:5000]}
 
@@ -41,4 +41,5 @@ async def transcribe(payload: dict):
 @app.get("/")
 def home():
     return {"message": "Clipper AI backend is running!"}
+
 
