@@ -1,11 +1,27 @@
-from fastapi import FastAPI
+# app.py
+import os
+import re
+import asyncio
+import tempfile
+import traceback
+
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from youtube_transcript_api import YouTubeTranscriptApi
-import re
 
-app = FastAPI()
+# subtitle-first library
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
+# downloader
+import yt_dlp
+
+# openai (for whisper fallback)
+import openai
+
+# Create app
+app = FastAPI(title="Clipper API - Transcribe fallback")
+
+# CORS so your frontend can talk
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,52 +29,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/transcribe")
-async def transcribe(payload: dict):
+
+# Helper: extract YouTube ID from many URL forms
+def extract_video_id(url: str) -> str | None:
+    if not url:
+        return None
+    # handle short youtu.be and full URLs
+    patterns = [
+        r"(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?\/]|$)",  # v=ID or /ID
+        r"youtu\.be\/([0-9A-Za-z_-]{11})",  # youtu.be/ID
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+# Attempt to fetch YouTube transcript (subtitles) first
+def fetch_subtitles(video_id: str, languages=("en", "en-US", "en-GB", "auto")) -> str:
+    """
+    Try to get a human/auto transcript from youtube_transcript_api.
+    Returns a joined text string.
+    Raises exceptions on failure.
+    """
+    # list_transcripts + find_transcript chain handles many versions
+    transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+    # Use preferred languages order
     try:
-        video_url = payload.get("url") or payload.get("video_url")
-        if not video_url:
-            return JSONResponse(status_code=400, content={"error": "Missing video URL"})
+        # find_transcript expects a list of language codes which it uses in order
+        transcript = transcripts.find_transcript(list(languages))
+    except Exception:
+        # try to pick the default (first) transcript if find_transcript doesn't work
+        # this may raise NoTranscriptFound if none exist
+        transcript = transcripts.find_manually_created_transcript([t.language_code for t in transcripts])
+    # fetch gives list of segments with 'text'
+    entries = transcript.fetch()
+    text = " ".join([e["text"] for e in entries])
+    return text
 
-        # ✅ Extract YouTube video ID
-        match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", video_url)
-        if not match:
-            return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
-        video_id = match.group(1)
 
-        # ✅ Try multiple languages
-        possible_langs = ['en', 'en-US', 'en-GB', 'auto']
+# Download audio with yt_dlp into a temporary file and return the filepath
+def download_audio_to_file(video_url: str) -> str:
+    """
+    Downloads best audio for the video_url into a temporary file (mp3/m4a) and returns its path.
+    Caller is responsible for deleting the file.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="clipper_audio_")
+    out_template = os.path.join(tmp_dir, "%(id)s.%(ext)s")
 
-        # ✅ Get available transcripts
-        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+    ytdl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": out_template,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        # extract audio might require ffmpeg/avconv to convert
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
 
-        # Find one available language
-        transcript = None
-        for lang in possible_langs:
-            try:
-                transcript = transcripts.find_transcript([lang]).fetch()
-                break
-            except:
-                continue
-
-        if not transcript:
-            return JSONResponse(status_code=404, content={"error": "No transcript found for this video."})
-
-        # ✅ Combine transcript text
-        full_text = " ".join([entry["text"] for entry in transcript])
-        if not full_text.strip():
-            return JSONResponse(status_code=404, content={"error": "Transcript is empty or unavailable."})
-
-        return {
-            "ok": True,
-            "url": video_url,
-            "transcript": full_text[:5000]
-        }
-
-    except Exception as e:
-        if "Subtitles are disabled" in str(e):
-            return JSONResponse(status_code=404, content={"error": "Subtitles are disabled for this video."})
-        elif "Could not retrieve" in str(e):
-            return JSONResponse(status_code=404, content={"error": "Could not retrieve transcript. Video may not have subtitles."})
-        else:
-            return JSONResponse(status_code=500, content={"error": str(e)})
+    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=True)
+        # after postprocessing, the file path is:
+        file_ext = "mp3"
+        file_name = f"{info['id']}.{file_ext}"
+        filepath = os.path.join(tmp_dir, file_name)
+        if not os.path.exists(filepath):
+            # if postprocessing changed name, try to find any file in tmp_dir
+            candidates = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir)]
+            if candidates:
+                filepath = candidates[0]
+            else:
+                raise FileNotFoundError("Audio file not found after yt
