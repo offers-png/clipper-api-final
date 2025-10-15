@@ -106,4 +106,6 @@ def download_audio_to_file(video_url: str) -> str:
             if candidates:
                 filepath = candidates[0]
             else:
-                raise FileNotFoundError("Audio file not found after yt
+                raise FileNotFoundError("Audio file not found after yt-dlp download.")
+
+
