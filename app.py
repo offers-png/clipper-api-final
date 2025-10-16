@@ -3,9 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import yt_dlp
-import openai
 import tempfile
 import traceback
+from openai import OpenAI  # ✅ new import
 
 # Initialize FastAPI
 app = FastAPI()
@@ -19,8 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ✅ Initialize OpenAI client (new version)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Request model
 class VideoRequest(BaseModel):
@@ -42,7 +42,7 @@ async def transcribe(request: Request):
         tempdir = tempfile.mkdtemp()
         outfile = os.path.join(tempdir, "audio.%(ext)s")
 
-        # 🔐 Handle YouTube cookies file or ENV
+        # Handle YouTube cookies
         cookie_path = "/run/secrets/youtube.com_cookies.txt"
         if not os.path.exists(cookie_path):
             cookie_env = os.getenv("YOUTUBE_COOKIES")
@@ -51,7 +51,6 @@ async def transcribe(request: Request):
                 with open(cookie_path, "w", encoding="utf-8") as f:
                     f.write(cookie_env)
 
-        # 🎧 yt-dlp options
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": outfile,
@@ -67,9 +66,9 @@ async def transcribe(request: Request):
             info = ydl.extract_info(video_url, download=True)
             audio_path = ydl.prepare_filename(info)
 
-        # 🧠 Transcribe using OpenAI Whisper
+        # ✅ NEW OpenAI API call for transcription
         with open(audio_path, "rb") as f:
-            transcript = openai.Audio.transcriptions.create(
+            transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f
             )
@@ -77,7 +76,7 @@ async def transcribe(request: Request):
         return {"success": True, "text": transcript.text}
 
     except yt_dlp.utils.DownloadError as e:
-        return {"error": f"Transcription failed: YouTube blocked the request. Try re-uploading your cookies. Details: {str(e)[:150]}..."}
+        return {"error": f"YouTube blocked download. Try re-uploading cookies. Details: {str(e)[:150]}..."}
 
     except Exception as e:
         print(traceback.format_exc())
