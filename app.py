@@ -30,15 +30,22 @@ TMP_DIR.mkdir(exist_ok=True, parents=True)
 # Helper: Convert Time (HH:MM:SS or MM:SS or SS) to Seconds
 # ============================================================
 def parse_time(t: str) -> float:
-    parts = [float(p) for p in t.split(":")]
-    if len(parts) == 1:
-        return parts[0]
-    elif len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    elif len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    else:
-        raise ValueError("Invalid time format")
+    """Convert time strings (HH:MM:SS, MM:SS, or SS) into seconds."""
+    try:
+        # Remove unwanted words or characters
+        t = str(t).strip().lower().replace("string", "").replace('"', '').replace("'", "")
+        parts = [float(p) for p in t.split(":") if p.strip() != ""]
+        if len(parts) == 1:
+            return parts[0]
+        elif len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        elif len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        else:
+            raise ValueError("Invalid time format")
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid time format: {t}")
+
 
 # ============================================================
 # Helper: Trim Video Using FFmpeg
@@ -183,3 +190,4 @@ def download_clip(clip_id: str, background: BackgroundTasks):
         filename=f"clip_{clip_id}.mp4",
         media_type="video/mp4"
     )
+
