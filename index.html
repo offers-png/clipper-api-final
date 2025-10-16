@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PTSEL Clipper (Phase 1)</title>
+  <title>PTSEL Clipper (Connected)</title>
   <style>
     body { background:#0f172a; color:#e5e7eb; font-family:system-ui, Arial; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; }
     .card { background:#111827; width:420px; padding:24px; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.35) }
@@ -54,6 +54,8 @@
   </div>
 
   <script>
+    const API_BASE = "https://clipper-api-final.onrender.com"; // ✅ your live backend URL
+
     const statusEl = document.getElementById("status");
     const linkEl = document.getElementById("dl");
 
@@ -88,22 +90,29 @@
         form.append("start", start);
         form.append("end", end);
 
-        const res = await fetch("/trim", {
+        const res = await fetch(`${API_BASE}/trim`, {
           method: "POST",
           body: form
         });
 
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`Server error: ${res.status} ${txt}`);
+        }
+
         const data = await res.json();
-        if (!res.ok || !data.ok) {
+        if (!data.ok && !data.download_url) {
           return setError(data.detail || data.error || "Trim failed.");
         }
 
         setStatus("✅ Clip ready!", true);
         linkEl.href = data.download_url;
         linkEl.style.display = "block";
-        linkEl.textContent = `⬇️ Download clip (${Math.round((data.size_bytes || 0)/1024/1024)} MB)`;
+        const mb = Math.round((data.size_bytes || 0)/1024/1024);
+        linkEl.textContent = `⬇️ Download clip${mb ? " ("+mb+" MB)" : ""}`;
       } catch (err) {
-        setError(err.message || "Network error.");
+        console.error(err);
+        setError(err.message || "Network error — check your connection or API.");
       }
     });
   </script>
