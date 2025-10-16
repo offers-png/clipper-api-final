@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-set -o errexit  # Exit on error
+# render-build.sh
 
-echo "Installing FFmpeg..."
-apt-get update && apt-get install -y ffmpeg
+# Make the file fail fast if anything goes wrong
+set -o errexit
 
-echo "Installing Python dependencies..."
+# Install ffmpeg (needed for clipping)
+apt-get update -y
+apt-get install -y ffmpeg
+
+# Install Python packages
+pip install --upgrade pip
 pip install -r requirements.txt
-
-echo "Build completed successfully!"
