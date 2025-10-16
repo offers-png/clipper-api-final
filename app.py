@@ -29,6 +29,7 @@ class VideoRequest(BaseModel):
 @app.get("/")
 def root():
     return {"message": "Clipper AI backend is running!"}
+
 @app.post("/transcribe")
 async def transcribe(request: Request):
     data = await request.json()
@@ -38,13 +39,16 @@ async def transcribe(request: Request):
         return {"error": "Missing YouTube URL"}
 
     try:
+        # Create a temporary directory for downloaded audio
         tempdir = tempfile.mkdtemp()
         outfile = os.path.join(tempdir, "audio.%(ext)s")
 
+        # Check for YouTube cookies (optional)
         cookie_path = "/run/secrets/youtube.com_cookies.txt"
         if not os.path.exists(cookie_path):
             cookie_path = "youtube.com_cookies.txt"
 
+        # yt-dlp download configuration
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": outfile,
@@ -55,20 +59,27 @@ async def transcribe(request: Request):
         if os.path.exists(cookie_path):
             ydl_opts["cookiefile"] = cookie_path
 
-        # Download audio
+        # Download YouTube audio
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             audio_path = ydl.prepare_filename(info)
 
-        # Transcribe using OpenAI
+        # Transcribe using OpenAI Whisper
         with open(audio_path, "rb") as f:
             transcript = openai.Audio.transcriptions.create(
                 model="whisper-1",
                 file=f
             )
 
-        return {"success": True, "text": transcript.text}
+        # ✅ Return properly formatted JSON for frontend
+        return {"text": transcript["text"]}
 
     except Exception as e:
-        return {"error": str(e)}
+        # Return detailed error for debugging
+        return {"error": f"Transcription failed: {str(e)}"}
 
+
+# Optional: for local development
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
