@@ -1,25 +1,92 @@
-<!-- index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PTSEL Clipper (Connected)</title>
+  <title>PTSEL Clipper</title>
   <style>
-    body { background:#0f172a; color:#e5e7eb; font-family:system-ui, Arial; margin:0; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-    .card { background:#111827; width:420px; padding:24px; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.35) }
-    h1 { margin:0 0 8px; font-size:22px; }
-    p { margin:6px 0 14px; color:#9ca3af }
-    label { display:block; margin:10px 0 6px; font-size:14px; color:#cbd5e1 }
-    input[type="text"], input[type="file"] { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #374151; background:#0b1220; color:#e5e7eb; }
-    .row { display:flex; gap:10px; }
-    .row > div { flex:1; }
-    button { width:100%; padding:12px; border:0; border-radius:10px; background:#3b82f6; color:white; font-weight:600; cursor:pointer; }
-    button:hover { background:#2563eb; }
-    .note { font-size:12px; color:#94a3b8; margin-top:8px }
-    .status { margin-top:12px; font-size:14px; }
-    .link { margin-top:14px; display:block; color:#22d3ee; text-decoration:none; word-break:break-all;}
-    .or { text-align:center; color:#94a3b8; margin:10px 0; }
+    body {
+      background: #0f172a;
+      color: #e5e7eb;
+      font-family: system-ui, Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #111827;
+      width: 420px;
+      padding: 24px;
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+    p {
+      margin: 6px 0 14px;
+      color: #9ca3af;
+    }
+    label {
+      display: block;
+      margin: 10px 0 6px;
+      font-size: 14px;
+      color: #cbd5e1;
+    }
+    input[type="text"],
+    input[type="file"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #374151;
+      background: #0b1220;
+      color: #e5e7eb;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+    }
+    .row > div {
+      flex: 1;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      border: 0;
+      border-radius: 10px;
+      background: #3b82f6;
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    .note {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 8px;
+    }
+    .status {
+      margin-top: 12px;
+      font-size: 14px;
+    }
+    .link {
+      margin-top: 14px;
+      display: block;
+      color: #22d3ee;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .or {
+      text-align: center;
+      color: #94a3b8;
+      margin: 10px 0;
+    }
   </style>
 </head>
 <body>
@@ -38,31 +105,35 @@
     <div class="row">
       <div>
         <label for="start">Start</label>
-        <input id="start" type="text" placeholder="SS | MM:SS | HH:MM:SS">
+        <input id="start" type="text" placeholder="SS | MM:SS | HH:MM:SS" />
       </div>
       <div>
         <label for="end">End</label>
-        <input id="end" type="text" placeholder="SS | MM:SS | HH:MM:SS">
+        <input id="end" type="text" placeholder="SS | MM:SS | HH:MM:SS" />
       </div>
     </div>
 
     <button id="go">Trim</button>
-    <div class="note">Tip: For accuracy, we re-encode to H.264/AAC. Download link appears below.</div>
+    <div class="note">
+      Tip: For accuracy, we re-encode to H.264/AAC. Download link appears below.
+    </div>
 
     <div id="status" class="status"></div>
-    <a id="dl" class="link" href="#" style="display:none" download>⬇️ Download clip</a>
+    <a id="dl" class="link" href="#" style="display: none" download>⬇️ Download clip</a>
   </div>
 
   <script>
-    const API_BASE = "https://clipper-api-final.onrender.com"; // ✅ your live backend URL
+    // ✅ Connect frontend to live backend
+    const API_BASE = "https://clipper-api-final.onrender.com";
 
     const statusEl = document.getElementById("status");
     const linkEl = document.getElementById("dl");
 
-    function setStatus(msg, ok=false) {
+    function setStatus(msg, ok = false) {
       statusEl.textContent = msg;
       statusEl.style.color = ok ? "#4ade80" : "#e5e7eb";
     }
+
     function setError(msg) {
       statusEl.textContent = "❌ " + msg;
       statusEl.style.color = "#f87171";
@@ -78,8 +149,10 @@
       const start = document.getElementById("start").value.trim();
       const end = document.getElementById("end").value.trim();
 
-      if (!file && !url) return setError("Upload a file or paste a YouTube URL.");
-      if (!start || !end) return setError("Start and End are required (SS | MM:SS | HH:MM:SS).");
+      if (!file && !url)
+        return setError("Upload a file or paste a YouTube URL.");
+      if (!start || !end)
+        return setError("Start and End are required (SS | MM:SS | HH:MM:SS).");
 
       setStatus("⏳ Uploading / preparing…");
 
@@ -92,27 +165,22 @@
 
         const res = await fetch(`${API_BASE}/trim`, {
           method: "POST",
-          body: form
+          body: form,
         });
 
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`Server error: ${res.status} ${txt}`);
-        }
-
         const data = await res.json();
-        if (!data.ok && !data.download_url) {
+        if (!res.ok || !data.ok) {
           return setError(data.detail || data.error || "Trim failed.");
         }
 
         setStatus("✅ Clip ready!", true);
-        linkEl.href = data.download_url;
+        linkEl.href = `${API_BASE}${data.download_url}`;
         linkEl.style.display = "block";
-        const mb = Math.round((data.size_bytes || 0)/1024/1024);
-        linkEl.textContent = `⬇️ Download clip${mb ? " ("+mb+" MB)" : ""}`;
+        linkEl.textContent = `⬇️ Download clip (${Math.round(
+          (data.size_bytes || 0) / 1024 / 1024
+        )} MB)`;
       } catch (err) {
-        console.error(err);
-        setError(err.message || "Network error — check your connection or API.");
+        setError(err.message || "Network error.");
       }
     });
   </script>
