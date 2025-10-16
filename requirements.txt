@@ -9,5 +9,6 @@ python-multipart==0.0.9
 moviepy==1.0.3
 ffmpeg-python==0.2.0
 youtube-transcript-api==0.6.2
-yt-dlp
+yt-dlp==2025.1.26
 openai
+
