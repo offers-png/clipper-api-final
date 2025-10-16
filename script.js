@@ -3,6 +3,7 @@ document
   .addEventListener("click", async () => {
     const url = document.getElementById("video-url").value.trim();
     const status = document.getElementById("status");
+
     status.style.color = "#fff";
     status.textContent = "⏳ Transcribing... Please wait...";
 
@@ -21,12 +22,14 @@ document
 
       const data = await response.json();
 
+      // Handle backend response
       if (data.error) {
         status.style.color = "#ff5555";
         status.textContent = "❌ " + data.error;
-      } else if (data.text) {
+      } else if (data.text && data.text.trim() !== "") {
         status.style.color = "#00ff88";
         status.textContent = "✅ Transcription completed!";
+
         const textBox = document.createElement("textarea");
         textBox.value = data.text;
         textBox.rows = 15;
@@ -35,7 +38,7 @@ document
         document.querySelector(".card").appendChild(textBox);
       } else {
         status.style.color = "#ffaa00";
-        status.textContent = "⚠️ No transcript found.";
+        status.textContent = "⚠️ No transcript found or returned undefined.";
       }
     } catch (err) {
       status.style.color = "#ff5555";
