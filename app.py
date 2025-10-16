@@ -1,3 +1,15 @@
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow all domains for testing
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,3 +96,4 @@ def download_clip(clip_id: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Clip not found.")
     return FileResponse(path, media_type="video/mp4", filename=f"{clip_id}.mp4")
+
