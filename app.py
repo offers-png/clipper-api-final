@@ -29,42 +29,46 @@ class VideoRequest(BaseModel):
 @app.get("/")
 def root():
     return {"message": "Clipper AI backend is running!"}
-
 @app.post("/transcribe")
-async def transcribe_video(req: VideoRequest):
-    video_url = req.url
+async def transcribe(request: Request):
+    data = await request.json()
+    video_url = data.get("url")
+
+    if not video_url:
+        return {"error": "Missing YouTube URL"}
+
     try:
-        # 1️⃣ Download YouTube audio
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = os.path.join(tmpdir, "audio.mp3")
+        tempdir = tempfile.mkdtemp()
+        outfile = os.path.join(tempdir, "audio.%(ext)s")
 
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": audio_path,
-                "quiet": True,
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }
-                ],
-            }
+        cookie_path = "/run/secrets/youtube.com_cookies.txt"
+        if not os.path.exists(cookie_path):
+            cookie_path = "youtube.com_cookies.txt"
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([video_url])
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": outfile,
+            "quiet": True,
+            "noplaylist": True,
+        }
 
-            if not os.path.exists(audio_path):
-                raise FileNotFoundError("Audio file not found after download.")
+        if os.path.exists(cookie_path):
+            ydl_opts["cookiefile"] = cookie_path
 
-            # 2️⃣ Transcribe using OpenAI Whisper
-            with open(audio_path, "rb") as audio_file:
-                transcript = openai.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
-                    file=audio_file
-                )
+        # Download audio
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            audio_path = ydl.prepare_filename(info)
 
-            return {"status": "success", "transcript": transcript.text}
+        # Transcribe using OpenAI
+        with open(audio_path, "rb") as f:
+            transcript = openai.Audio.transcriptions.create(
+                model="whisper-1",
+                file=f
+            )
+
+        return {"success": True, "text": transcript.text}
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"error": str(e)}
+
