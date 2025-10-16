@@ -1,34 +1,45 @@
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+import os
+import shutil
+import uuid
+import subprocess
 from pathlib import Path
-import uuid, subprocess, shutil, os
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="PTSEL Clipper", version="1.0.1")
+app = FastAPI(
+    title="PTSEL Clipper",
+    description="Video clipper API with persistent file storage",
+    version="1.0.1"
+)
 
-# Allow CORS
+# ===============================================================
+# Enable CORS for frontend
+# ===============================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================================================
-# Setup Temporary Directory
-# =========================================================
-TMP_DIR = Path("/tmp/clipper")
-TMP_DIR.mkdir(exist_ok=True, parents=True)
+# ===============================================================
+# Persistent storage directories
+# ===============================================================
+BASE_DIR = Path(__file__).resolve().parent
+TMP_DIR = BASE_DIR / "tmp_clips"
+TMP_DIR.mkdir(exist_ok=True)
 
+PERSISTENT_DIR = BASE_DIR / "clips"
+PERSISTENT_DIR.mkdir(exist_ok=True)
 
-# =========================================================
-# Convert time strings (HH:MM:SS, MM:SS, or SS) → seconds
-# =========================================================
+# ===============================================================
+# Time parsing helper (HH:MM:SS, MM:SS, or SS)
+# ===============================================================
 def parse_time(t: str) -> float:
-    """Convert flexible time format into seconds."""
     try:
-        t = str(t).strip().lower().replace("string", "").replace('"', '').replace("'", "")
-        parts = [float(p) for p in t.split(":") if p.strip()]
+        parts = [float(p) for p in t.split(":")]
         if len(parts) == 1:
             return parts[0]
         elif len(parts) == 2:
@@ -36,141 +47,84 @@ def parse_time(t: str) -> float:
         elif len(parts) == 3:
             return parts[0] * 3600 + parts[1] * 60 + parts[2]
         else:
-            raise ValueError("Invalid format")
+            raise ValueError
     except Exception:
-        raise HTTPException(status_code=400, detail=f"Invalid time value: {t}")
+        raise HTTPException(status_code=400, detail=f"Invalid time format: {t}")
 
-
-# =========================================================
-# Trim video with FFmpeg
-# =========================================================
-def ffmpeg_trim(input_path: Path, start_s: float, end_s: float, output_path: Path):
-    """Trim a video between start and end timestamps."""
+# ===============================================================
+# Trim using FFmpeg
+# ===============================================================
+def ffmpeg_trim(input_path: Path, start: float, end: float, output_path: Path):
     try:
-        if shutil.which("ffmpeg") is None:
-            raise HTTPException(status_code=500, detail="FFmpeg not found in environment.")
-        duration = end_s - start_s
-        if duration <= 0:
-            raise HTTPException(status_code=400, detail="End must be greater than start.")
         cmd = [
             "ffmpeg",
-            "-ss", str(start_s),
+            "-ss", str(start),
+            "-to", str(end),
             "-i", str(input_path),
-            "-t", str(duration),
             "-c:v", "libx264",
             "-c:a", "aac",
-            "-b:a", "128k",
-            "-preset", "ultrafast",
+            "-strict", "experimental",
             "-y",
-            str(output_path)
+            str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"FFmpeg error: {result.stderr[:400]}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail="FFmpeg processing failed")
 
-
-# =========================================================
-# Helper cleanup
-# =========================================================
-def schedule_cleanup(bg: BackgroundTasks, *paths: Path):
-    """Delete temporary files after response."""
-    def _delete():
-        for p in paths:
-            try:
-                if p.is_file():
-                    p.unlink(missing_ok=True)
-                elif p.is_dir():
-                    shutil.rmtree(p, ignore_errors=True)
-            except:
-                pass
-    bg.add_task(_delete)
-
-
-# =========================================================
-# Root endpoint
-# =========================================================
+# ===============================================================
+# API routes
+# ===============================================================
 @app.get("/")
 def root():
-    return {"ok": True, "message": "PTSEL Clipper API is live"}
+    return {"message": "PTSEL Clipper API active"}
 
-
-# =========================================================
-# Main trim route
-# =========================================================
 @app.post("/trim")
 async def trim_video(
-    background: BackgroundTasks,
     file: UploadFile = File(None),
     url: str = Form(""),
     start: str = Form(...),
-    end: str = Form(...)
+    end: str = Form(...),
 ):
-    try:
-        start_s = parse_time(start)
-        end_s = parse_time(end)
+    if not file and not url:
+        raise HTTPException(status_code=400, detail="Upload a file or provide a URL")
 
-        work_dir = TMP_DIR / str(uuid.uuid4())
-        work_dir.mkdir(parents=True, exist_ok=True)
+    start_time = parse_time(start)
+    end_time = parse_time(end)
 
-        input_path = work_dir / "input.mp4"
+    # Temp file
+    input_path = TMP_DIR / f"{uuid.uuid4()}.mp4"
+    output_path = TMP_DIR / f"{uuid.uuid4()}.mp4"
 
-        # Download from YouTube if no file
-        if not file and url:
-            yt_path = work_dir / "yt.mp4"
-            cmd = ["yt-dlp", "-f", "mp4", "-o", str(yt_path), url]
-            subprocess.run(cmd, capture_output=True)
-            if not yt_path.exists():
-                raise HTTPException(status_code=400, detail="Failed to download YouTube video.")
-            input_path = yt_path
-        elif file:
-            with input_path.open("wb") as f:
-                shutil.copyfileobj(file.file, f)
-        else:
-            raise HTTPException(status_code=400, detail="No video input provided.")
+    # Save uploaded file
+    if file:
+        with open(input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    else:
+        raise HTTPException(status_code=400, detail="URL trimming not yet supported")
 
-        # Output path
-        out_id = str(uuid.uuid4())
-        out_path = work_dir / f"{out_id}.mp4"
+    # Process video
+    ffmpeg_trim(input_path, start_time, end_time, output_path)
 
-        # Trim
-        ffmpeg_trim(input_path, start_s, end_s, out_path)
+    # Move to persistent folder (so it's not deleted)
+    final_id = str(uuid.uuid4())
+    final_path = PERSISTENT_DIR / f"{final_id}.mp4"
+    shutil.move(str(output_path), final_path)
 
-        if not out_path.exists():
-            raise HTTPException(status_code=500, detail="Trim failed: output not found.")
+    file_size = final_path.stat().st_size
 
-        download_url = f"/download/{out_id}"
-        schedule_cleanup(background, work_dir)
-
-        return {
+    return JSONResponse(
+        {
             "ok": True,
-            "download_url": download_url,
-            "size_bytes": out_path.stat().st_size,
-            "filename": f"{out_id}.mp4",
-            "message": "Clip ready."
+            "download_url": f"/download/{final_id}",
+            "size_bytes": file_size,
+            "filename": final_path.name,
+            "message": "Clip ready!",
         }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
-
-
-# =========================================================
-# Download route
-# =========================================================
-@app.get("/download/{clip_id}")
-def download_clip(clip_id: str, background: BackgroundTasks):
-    matches = list(TMP_DIR.glob(f"**/{clip_id}.mp4"))
-    if not matches:
-        raise HTTPException(status_code=404, detail="Clip not found.")
-    file_path = matches[0]
-    work_dir = file_path.parent
-    schedule_cleanup(background, work_dir)
-    return FileResponse(
-        path=str(file_path),
-        filename=f"clip_{clip_id}.mp4",
-        media_type="video/mp4"
     )
 
+@app.get("/download/{clip_id}")
+def download_clip(clip_id: str):
+    file_path = PERSISTENT_DIR / f"{clip_id}.mp4"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    return FileResponse(file_path, media_type="video/mp4", filename=f"{clip_id}.mp4")
