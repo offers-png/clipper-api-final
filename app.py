@@ -7,6 +7,7 @@ import time
 
 # Create the app
 app = FastAPI()
+
 # Allow frontend to connect (local files & hosted)
 app.add_middleware(
     CORSMiddleware,
@@ -16,9 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure folders exist
-os.makedirs("uploads", exist_ok=True)
-os.makedirs("clips", exist_ok=True)
+# ✅ Use persistent storage path on Render (doesn't reset on restart)
+clip_dir = "/var/data/clips"
+upload_dir = "/var/data/uploads"
+
+os.makedirs(upload_dir, exist_ok=True)
+os.makedirs(clip_dir, exist_ok=True)
 
 
 @app.get("/")
@@ -40,10 +44,10 @@ async def trim_video(
     """
 
     try:
-        # Create unique file names
+        # Create unique file names (use persistent paths)
         timestamp = int(time.time())
-        input_path = f"uploads/input_{timestamp}.mp4"
-        output_path = f"clips/output_{timestamp}.mp4"
+        input_path = f"{upload_dir}/input_{timestamp}.mp4"
+        output_path = f"{clip_dir}/output_{timestamp}.mp4"
 
         # Save uploaded video
         if file:
@@ -56,29 +60,30 @@ async def trim_video(
         else:
             raise HTTPException(status_code=400, detail="No file or URL provided.")
 
-        # FFmpeg command optimized for speed and compression
+        # FFmpeg command optimized for larger videos (safe, fast, stable)
         cmd = [
             "ffmpeg",
+            "-y",                  # overwrite if exists
             "-ss", start,
             "-to", end,
             "-i", input_path,
             "-c:v", "libx264",
-            "-preset", "ultrafast",     # super fast encoding
-            "-crf", "28",               # good compression
+            "-preset", "ultrafast",
+            "-crf", "28",
             "-c:a", "aac",
             "-b:a", "128k",
-            "-movflags", "+faststart",  # allows instant playback
+            "-movflags", "+faststart",
             output_path
         ]
 
-        # Function to run ffmpeg in background
+        # Function to run ffmpeg safely in background
         def run_ffmpeg():
             try:
                 subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except Exception as e:
                 print(f"FFmpeg failed: {e}")
 
-        # Add background task (avoids Render timeouts)
+        # Run ffmpeg in background (prevents Render timeout)
         background_tasks.add_task(run_ffmpeg)
 
         # Return link immediately
@@ -91,11 +96,10 @@ async def trim_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Serve finished clips
+# ✅ Serve finished clips from persistent storage
 @app.get("/clips/{filename}")
 async def get_clip(filename: str):
-    clip_path = os.path.join("clips", filename)
+    clip_path = os.path.join(clip_dir, filename)
     if os.path.exists(clip_path):
         return FileResponse(clip_path, media_type="video/mp4", filename=filename)
     raise HTTPException(status_code=404, detail="Clip not found")
-
