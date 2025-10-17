@@ -7,6 +7,16 @@ from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+# Allow frontend to access backend (CORS fix)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://ptsel-frontend.onrender.com"],  # You can use ["*"] for testing
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ✅ Persistent storage for uploaded chunks
 UPLOAD_DIR = "/data/uploads"
@@ -97,3 +107,4 @@ async def download_file(filename: str):
     if not os.path.exists(path):
         return JSONResponse({"error": "File not found"}, status_code=404)
     return FileResponse(path, filename=filename)
+
