@@ -1,18 +1,22 @@
 services:
   - type: web
-    name: ptsel-clipper-api
+    name: clipper-api-final-1
     env: python
     plan: standard
-    region: oregon
-    buildCommand: |
-      apt-get update && apt-get install -y ffmpeg && poetry install
-    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    branch: main
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 8000
+    buildCommand: pip install -r requirements.txt
+    autoDeploy: true
     disk:
-      name: clipper-storage
+      name: data-disk
       mountPath: /data
       sizeGB: 20
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "1"
-      - key: CLIP_STORAGE_PATH
-        value: "/data"
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: UVICORN_WORKERS
+        value: 1
+      - key: UVICORN_LIMIT_MAX_REQUEST_SIZE
+        value: "5000000000" # 5GB limit
+      - key: UVICORN_TIMEOUT_KEEP_ALIVE
+        value: "120"
