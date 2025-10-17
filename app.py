@@ -1,3 +1,4 @@
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, Form, UploadFile, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 import subprocess
@@ -6,6 +7,14 @@ import time
 
 # Create the app
 app = FastAPI()
+# Allow frontend to connect (local files & hosted)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # you can later restrict this to your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Ensure folders exist
 os.makedirs("uploads", exist_ok=True)
@@ -89,3 +98,4 @@ async def get_clip(filename: str):
     if os.path.exists(clip_path):
         return FileResponse(clip_path, media_type="video/mp4", filename=filename)
     raise HTTPException(status_code=404, detail="Clip not found")
+
