@@ -64,55 +64,67 @@
 
 <script>
 const trimButton = document.querySelector("button");
-trimButton.addEventListener("click", uploadVideo);
+trimButton.addEventListener("click", startChunkUpload);
 
-async function uploadVideo() {
+async function startChunkUpload() {
   const file = document.querySelector('input[type="file"]').files[0];
   const start = document.querySelectorAll('input')[1].value;
   const end = document.querySelectorAll('input')[2].value;
+  if (!file) return alert("Please choose a file first.");
 
-  if (!file) return alert("Please select a file first.");
-
-  // Create progress bar
+  const chunkSize = 5 * 1024 * 1024; // 5 MB per chunk
+  const totalChunks = Math.ceil(file.size / chunkSize);
   const progress = document.createElement("progress");
+  progress.max = totalChunks;
   progress.value = 0;
-  progress.max = 100;
   progress.style.width = "100%";
   progress.style.marginTop = "10px";
   document.body.appendChild(progress);
 
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("start", start);
-  formData.append("end", end);
+  for (let i = 0; i < totalChunks; i++) {
+    const startByte = i * chunkSize;
+    const endByte = Math.min(file.size, startByte + chunkSize);
+    const chunk = file.slice(startByte, endByte);
 
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "https://clipper-api-final-1.onrender.com/trim", true);
-  xhr.timeout = 600000; // 10 minutes
-  xhr.upload.onprogress = (event) => {
-    if (event.lengthComputable) {
-      progress.value = (event.loaded / event.total) * 100;
+    const formData = new FormData();
+    formData.append("chunk", chunk);
+    formData.append("filename", file.name);
+    formData.append("index", i);
+    formData.append("total", totalChunks);
+    formData.append("start_time", start);
+    formData.append("end_time", end);
+
+    try {
+      const res = await fetch("https://clipper-api-final-1.onrender.com/upload_chunk", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) throw new Error("Chunk upload failed");
+      progress.value = i + 1;
+    } catch (err) {
+      alert("❌ Upload failed on chunk " + i + ": " + err.message);
+      return;
     }
-  };
+  }
 
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      const data = JSON.parse(xhr.responseText);
-      alert("✅ Clip ready! " + (data.download_url || "Processing done."));
-    } else {
-      alert("❌ Upload failed: " + xhr.statusText);
-    }
-  };
+  const res = await fetch("https://clipper-api-final-1.onrender.com/merge_chunks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      start_time: start,
+      end_time: end
+    }),
+  });
 
-  xhr.onerror = () => alert("❌ Network error. Check server logs.");
-  xhr.ontimeout = () => alert("⏰ Upload timed out. Try shorter clip.");
-
-  xhr.send(formData);
+  const data = await res.json();
+  alert("✅ Clip ready! Download: " + data.download_url);
 }
 </script>
 
 
 </body>
 </html>
+
 
 
