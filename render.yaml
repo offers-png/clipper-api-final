@@ -4,11 +4,11 @@ services:
     env: python
     plan: standard
     branch: main
-    startCommand: uvicorn app:app --host 0.0.0.0 --port 8000 --limit-max-request-size 5000000000
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 8000
     buildCommand: pip install -r requirements.txt
     autoDeploy: true
 
-    # 🧠 Persistent disk for large files
+    # Persistent disk for big files
     disk:
       name: data-disk
       mountPath: /data
@@ -16,8 +16,6 @@ services:
 
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.8
+        value: 3.11.8      # or 3.10/3.12 supported by Render
       - key: UVICORN_TIMEOUT_KEEP_ALIVE
         value: "180"
-      - key: UVICORN_LIMIT_MAX_REQUEST_SIZE
-        value: "5000000000"   # 5 GB
