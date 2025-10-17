@@ -1,141 +1,38 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PTSEL Clipper</title>
-  <style>
-    body {
-      background: #0e0f11;
-      color: #fff;
-      font-family: Arial, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    .container {
-      background: #181a1d;
-      padding: 40px;
-      border-radius: 12px;
-      text-align: center;
-      width: 380px;
-      box-shadow: 0 0 20px #000;
-    }
-    input, button {
-      width: 100%;
-      padding: 10px;
-      margin: 8px 0;
-      border-radius: 6px;
-      border: none;
-    }
-    input {
-      background: #222;
-      color: #ccc;
-    }
-    button {
-      background: #007bff;
-      color: #fff;
-      font-weight: bold;
-      cursor: pointer;
-      transition: 0.3s;
-    }
-    button:hover {
-      background: #0066d6;
-    }
-    progress {
-      width: 100%;
-      margin-top: 10px;
-    }
-    .status {
-      margin-top: 10px;
-      font-size: 0.9em;
-    }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="container">
-    <h2>🎬 PTSEL Clipper</h2>
-    <p>Upload a long video (supports 60+ mins)</p>
-    <input type="file" accept="video/*">
-    <input type="text" placeholder="Start (e.g. 00:05:00)">
-    <input type="text" placeholder="End (e.g. 00:08:30)">
-    <button>Trim</button>
-    <progress value="0" max="100" style="display:none;"></progress>
-    <div class="status"></div>
+    <h1>🎬 PTSEL Clipper</h1>
+    <p>Upload or link your video – supports 60 + mins</p>
+
+    <div class="upload-options">
+      <button id="file-btn" class="active">🎥 Upload File</button>
+      <button id="link-btn">🔗 Use Video URL</button>
+      <button id="whisper-btn">🧠 Whisper Transcribe</button>
+    </div>
+
+    <form id="clip-form">
+      <div id="file-upload">
+        <input type="file" id="file-input" accept="video/*" />
+      </div>
+      <div id="link-upload" class="hidden">
+        <input type="url" id="video-url" placeholder="Enter video URL" />
+      </div>
+
+      <input type="text" id="start" placeholder="Start (e.g. 00:05:00)" />
+      <input type="text" id="end" placeholder="End (e.g. 00:08:30)" />
+
+      <button type="submit">Trim</button>
+      <p id="status"></p>
+    </form>
   </div>
 
-  <script>
-  const trimButton = document.querySelector("button");
-  const progressBar = document.querySelector("progress");
-  const statusDiv = document.querySelector(".status");
-
-  const API_BASE = "https://clipper-api-final-1.onrender.com"; // ✅ your backend URL
-
-  trimButton.addEventListener("click", startChunkUpload);
-
-  async function startChunkUpload() {
-    const file = document.querySelector('input[type="file"]').files[0];
-    const start = document.querySelectorAll('input')[1].value;
-    const end = document.querySelectorAll('input')[2].value;
-
-    if (!file) return alert("Please choose a video file.");
-    if (!start || !end) return alert("Enter start and end times.");
-
-    const chunkSize = 5 * 1024 * 1024; // 5MB
-    const totalChunks = Math.ceil(file.size / chunkSize);
-    progressBar.style.display = "block";
-    progressBar.max = totalChunks;
-    progressBar.value = 0;
-    statusDiv.textContent = "Uploading...";
-
-    for (let i = 0; i < totalChunks; i++) {
-      const startByte = i * chunkSize;
-      const endByte = Math.min(file.size, startByte + chunkSize);
-      const chunk = file.slice(startByte, endByte);
-
-      const formData = new FormData();
-      formData.append("chunk", chunk);
-      formData.append("filename", file.name);
-      formData.append("index", i);
-      formData.append("total", totalChunks);
-      formData.append("start_time", start);
-      formData.append("end_time", end);
-
-      try {
-        const res = await fetch(`${API_BASE}/upload_chunk`, {
-          method: "POST",
-          body: formData,
-        });
-        if (!res.ok) throw new Error("Chunk upload failed");
-        progressBar.value = i + 1;
-      } catch (err) {
-        statusDiv.textContent = "❌ Upload failed: " + err.message;
-        return;
-      }
-    }
-
-    statusDiv.textContent = "Processing video...";
-    try {
-      const res = await fetch(`${API_BASE}/merge_chunks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          start_time: start,
-          end_time: end,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.download_url) {
-        statusDiv.innerHTML = `✅ Clip ready! <a href="${API_BASE}${data.download_url}" target="_blank" style="color:#00ffcc;">Download here</a>`;
-      } else {
-        throw new Error(data.error || "Server error");
-      }
-    } catch (err) {
-      statusDiv.textContent = "❌ " + err.message;
-    }
-  }
-  </script>
+  <script src="script.js"></script>
 </body>
 </html>
