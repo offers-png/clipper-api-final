@@ -6,163 +6,119 @@
   <title>PTSEL Clipper</title>
   <style>
     body {
-      background-color: #0d1117;
-      color: #f0f6fc;
-      font-family: "Segoe UI", sans-serif;
+      background: #0b0c10;
+      color: #fff;
+      font-family: Arial, sans-serif;
       display: flex;
       justify-content: center;
       align-items: center;
       height: 100vh;
-      margin: 0;
     }
-
     .container {
-      background: #161b22;
+      background: #14151a;
       padding: 30px;
-      border-radius: 15px;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+      border-radius: 14px;
       width: 360px;
       text-align: center;
+      box-shadow: 0 0 12px rgba(255,255,255,0.1);
     }
-
-    h2 {
-      margin-bottom: 20px;
-      color: #fff;
-    }
-
-    input,
-    button {
-      width: 100%;
-      padding: 10px;
+    input, button {
+      width: 90%;
       margin: 8px 0;
-      border-radius: 6px;
+      padding: 10px;
+      border-radius: 8px;
       border: none;
-    }
-
-    input {
-      background: #0d1117;
-      color: #f0f6fc;
-      border: 1px solid #30363d;
-    }
-
-    button {
-      background-color: #238636;
-      color: white;
-      font-weight: bold;
-      cursor: pointer;
-      transition: 0.3s;
-    }
-
-    button:hover {
-      background-color: #2ea043;
-    }
-
-    .status {
-      margin-top: 15px;
+      outline: none;
       font-size: 14px;
     }
-
-    .progress {
-      margin-top: 10px;
-      height: 6px;
-      width: 100%;
-      background: #30363d;
-      border-radius: 6px;
-      overflow: hidden;
-      display: none;
+    input { background: #1f2025; color: #fff; }
+    button {
+      background: #1e90ff;
+      color: white;
+      cursor: pointer;
     }
-
-    .progress-bar {
-      height: 100%;
-      width: 0%;
-      background: #238636;
-      transition: width 0.4s ease;
-    }
-
-    a {
-      color: #3fb950;
-      text-decoration: none;
+    button:disabled { background: #555; }
+    .status { margin-top: 12px; font-size: 13px; }
+    .download-link a {
+      color: #00ff88;
       font-weight: bold;
+      text-decoration: none;
     }
   </style>
 </head>
 <body>
   <div class="container">
     <h2>🎬 PTSEL Clipper</h2>
-    <p>Upload a video or paste a YouTube link.<br />Set Start & End (Max 60 min).</p>
+    <p>Upload a video or paste a YouTube link.<br>Set Start & End (Max 60 min).</p>
 
-    <input type="file" id="fileInput" accept="video/mp4,video/webm,video/mov" />
-    <p>— or —</p>
-    <input type="text" id="youtubeUrl" placeholder="https://www.youtube.com/watch?v=..." />
-    <input type="text" id="startTime" placeholder="Start (e.g. 00:05)" />
-    <input type="text" id="endTime" placeholder="End (e.g. 00:30)" />
-    <button id="trimButton">Trim</button>
+    <input type="file" id="fileInput" />
+    <p>— OR —</p>
+    <input type="text" id="youtubeUrl" placeholder="https://youtube.com/watch?v=..." />
+    <input type="text" id="start" placeholder="Start (e.g. 00:05)" />
+    <input type="text" id="end" placeholder="End (e.g. 00:30)" />
+    <button id="trimBtn">Trim</button>
 
-    <div class="progress" id="progress">
-      <div class="progress-bar" id="progressBar"></div>
-    </div>
-
-    <div class="status" id="statusText"></div>
+    <div class="status" id="status"></div>
+    <div class="download-link" id="downloadLink"></div>
   </div>
 
   <script>
-    const trimButton = document.getElementById("trimButton");
-    const statusText = document.getElementById("statusText");
-    const progress = document.getElementById("progress");
-    const progressBar = document.getElementById("progressBar");
+    const API_BASE = "https://clipper-api-final.onrender.com";
+    const trimBtn = document.getElementById("trimBtn");
+    const statusDiv = document.getElementById("status");
+    const downloadDiv = document.getElementById("downloadLink");
 
-    trimButton.addEventListener("click", async () => {
-      const fileInput = document.getElementById("fileInput");
-      const youtubeUrl = document.getElementById("youtubeUrl").value;
-      const start = document.getElementById("startTime").value;
-      const end = document.getElementById("endTime").value;
+    trimBtn.onclick = async () => {
+      const file = document.getElementById("fileInput").files[0];
+      const url = document.getElementById("youtubeUrl").value.trim();
+      const start = document.getElementById("start").value.trim();
+      const end = document.getElementById("end").value.trim();
 
-      if (!fileInput.files.length && !youtubeUrl) {
-        alert("Please upload a file or enter a YouTube URL.");
+      if ((!file && !url) || !start || !end) {
+        statusDiv.innerHTML = "⚠️ Please fill in all fields.";
         return;
       }
 
-      statusText.innerHTML = "⏳ Uploading and processing...";
-      progress.style.display = "block";
-      progressBar.style.width = "10%";
+      trimBtn.disabled = true;
+      statusDiv.innerHTML = "⏳ Processing... this may take 1–2 minutes.";
+      downloadDiv.innerHTML = "";
 
       const formData = new FormData();
-      if (fileInput.files.length) formData.append("file", fileInput.files[0]);
-      if (youtubeUrl) formData.append("url", youtubeUrl);
+      if (file) formData.append("file", file);
+      if (url) formData.append("url", url);
       formData.append("start", start);
       formData.append("end", end);
 
       try {
-        const response = await fetch("https://clipper-api-final.onrender.com/trim", {
+        const res = await fetch(`${API_BASE}/trim`, {
           method: "POST",
           body: formData,
         });
+        const data = await res.json();
 
-        progressBar.style.width = "60%";
+        if (!res.ok) throw new Error(data.detail || "Failed to process clip.");
 
-        const result = await response.json();
+        const clipUrl = data.download_url;
+        statusDiv.innerHTML = "🪄 Processing started. Waiting for completion...";
 
-        if (result.download_url) {
-          statusText.innerHTML = "🧩 Processing... this may take up to 1-2 minutes.";
-          progressBar.style.width = "80%";
+        // Check every few seconds if clip exists
+        const checkClip = async () => {
+          const check = await fetch(clipUrl);
+          if (check.ok) {
+            statusDiv.innerHTML = "✅ Clip ready!";
+            downloadDiv.innerHTML = `<a href="${clipUrl}" target="_blank">⬇️ Download</a>`;
+            trimBtn.disabled = false;
+          } else {
+            setTimeout(checkClip, 5000); // try again in 5s
+          }
+        };
+        checkClip();
 
-          // Wait for FFmpeg to finish (poll every 5 seconds)
-          const checkReady = setInterval(async () => {
-            const res = await fetch("https://clipper-api-final.onrender.com" + result.download_url);
-            if (res.status === 200) {
-              clearInterval(checkReady);
-              progressBar.style.width = "100%";
-              statusText.innerHTML = `✅ Clip ready: <a href="https://clipper-api-final.onrender.com${result.download_url}" download>Download</a>`;
-            }
-          }, 5000);
-        } else {
-          statusText.innerHTML = "⚠️ Something went wrong. Please retry.";
-        }
       } catch (err) {
-        statusText.innerHTML = "❌ Failed to connect. Please try again.";
-        console.error(err);
+        statusDiv.innerHTML = "❌ Error: " + err.message;
+        trimBtn.disabled = false;
       }
-    });
+    };
   </script>
 </body>
 </html>
