@@ -48,17 +48,25 @@ async def merge_chunks(request: Request):
     # Trim the video with ffmpeg
     output_path = os.path.join(UPLOAD_DIR, f"trimmed_{filename}")
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", merged_path,
-                "-ss", start,
-                "-to", end,
-                "-c", "copy",
-                output_path
-            ],
-            check=True
-        )
+       subprocess.run(
+    [
+        "ffmpeg", "-y",
+        "-hide_banner",
+        "-hwaccel", "auto",          # use hardware acceleration if available
+        "-ss", start,
+        "-to", end,
+        "-accurate_seek",            # more precise cuts without full re-encode
+        "-i", merged_path,
+        "-c:v", "libx264",           # fast x264 encoding
+        "-preset", "ultrafast",      # prioritize speed
+        "-crf", "28",                # balance speed/quality
+        "-c:a", "aac",               # faster audio encode
+        "-b:a", "128k",
+        output_path
+    ],
+    check=True
+)
+
     except subprocess.CalledProcessError:
         return JSONResponse({"error": "Trimming failed"}, status_code=500)
 
@@ -73,3 +81,4 @@ async def download_file(filename: str):
     if not os.path.exists(path):
         return JSONResponse({"error": "File not found"}, status_code=404)
     return FileResponse(path, filename=filename)
+
