@@ -7,105 +7,162 @@
   <style>
     body {
       background-color: #0d1117;
-      color: white;
-      font-family: Arial, sans-serif;
+      color: #f0f6fc;
+      font-family: "Segoe UI", sans-serif;
       display: flex;
       justify-content: center;
       align-items: center;
       height: 100vh;
+      margin: 0;
     }
+
     .container {
       background: #161b22;
       padding: 30px;
-      border-radius: 12px;
+      border-radius: 15px;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+      width: 360px;
       text-align: center;
-      width: 350px;
-      box-shadow: 0 0 10px #000;
     }
-    input, button {
+
+    h2 {
+      margin-bottom: 20px;
+      color: #fff;
+    }
+
+    input,
+    button {
       width: 100%;
-      margin: 6px 0;
       padding: 10px;
+      margin: 8px 0;
       border-radius: 6px;
       border: none;
     }
+
+    input {
+      background: #0d1117;
+      color: #f0f6fc;
+      border: 1px solid #30363d;
+    }
+
     button {
-      background-color: #2563eb;
+      background-color: #238636;
       color: white;
       font-weight: bold;
       cursor: pointer;
+      transition: 0.3s;
     }
+
     button:hover {
-      background-color: #1d4ed8;
+      background-color: #2ea043;
     }
-    #status {
-      margin-top: 12px;
+
+    .status {
+      margin-top: 15px;
       font-size: 14px;
-      color: #f87171;
+    }
+
+    .progress {
+      margin-top: 10px;
+      height: 6px;
+      width: 100%;
+      background: #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+      display: none;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #238636;
+      transition: width 0.4s ease;
+    }
+
+    a {
+      color: #3fb950;
+      text-decoration: none;
+      font-weight: bold;
     }
   </style>
 </head>
 <body>
   <div class="container">
     <h2>🎬 PTSEL Clipper</h2>
-    <p>Upload a video or paste a YouTube link. Set Start & End. Max clip = 60 min.</p>
+    <p>Upload a video or paste a YouTube link.<br />Set Start & End (Max 60 min).</p>
 
-    <label>Upload Video (mp4/mov/webm...)</label>
-    <input type="file" id="file" accept="video/*" />
-
-    <p>— OR —</p>
-    <label>YouTube URL</label>
-    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." />
-
-    <label>Start</label>
-    <input type="text" id="start" placeholder="00:05" />
-
-    <label>End</label>
-    <input type="text" id="end" placeholder="00:30" />
-
+    <input type="file" id="fileInput" accept="video/mp4,video/webm,video/mov" />
+    <p>— or —</p>
+    <input type="text" id="youtubeUrl" placeholder="https://www.youtube.com/watch?v=..." />
+    <input type="text" id="startTime" placeholder="Start (e.g. 00:05)" />
+    <input type="text" id="endTime" placeholder="End (e.g. 00:30)" />
     <button id="trimButton">Trim</button>
-    <p id="status"></p>
+
+    <div class="progress" id="progress">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <div class="status" id="statusText"></div>
   </div>
 
   <script>
-  document.getElementById("trimButton").addEventListener("click", async () => {
-    const fileInput = document.getElementById("file");
-    const urlInput = document.getElementById("url");
-    const start = document.getElementById("start").value;
-    const end = document.getElementById("end").value;
-    const status = document.getElementById("status");
-    status.innerText = "⏳ Uploading and processing...";
+    const trimButton = document.getElementById("trimButton");
+    const statusText = document.getElementById("statusText");
+    const progress = document.getElementById("progress");
+    const progressBar = document.getElementById("progressBar");
 
-    const formData = new FormData();
-    if (fileInput.files.length > 0) formData.append("file", fileInput.files[0]);
-    if (urlInput.value) formData.append("url", urlInput.value);
-    formData.append("start", start);
-    formData.append("end", end);
+    trimButton.addEventListener("click", async () => {
+      const fileInput = document.getElementById("fileInput");
+      const youtubeUrl = document.getElementById("youtubeUrl").value;
+      const start = document.getElementById("startTime").value;
+      const end = document.getElementById("endTime").value;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
-
-    try {
-      const res = await fetch("https://clipper-api-final.onrender.com/trim", {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Server error: ${res.status} - ${err}`);
+      if (!fileInput.files.length && !youtubeUrl) {
+        alert("Please upload a file or enter a YouTube URL.");
+        return;
       }
 
-      const data = await res.json();
-      status.innerHTML = `✅ Clip ready: <a href="https://clipper-api-final.onrender.com${data.download_url}" target="_blank" style="color:#22c55e;">Download</a>`;
-    } catch (err) {
-      status.innerText = "❌ " + err.message;
-      console.error("Trim error:", err);
-    }
-  });
+      statusText.innerHTML = "⏳ Uploading and processing...";
+      progress.style.display = "block";
+      progressBar.style.width = "10%";
+
+      const formData = new FormData();
+      if (fileInput.files.length) formData.append("file", fileInput.files[0]);
+      if (youtubeUrl) formData.append("url", youtubeUrl);
+      formData.append("start", start);
+      formData.append("end", end);
+
+      try {
+        const response = await fetch("https://clipper-api-final.onrender.com/trim", {
+          method: "POST",
+          body: formData,
+        });
+
+        progressBar.style.width = "60%";
+
+        const result = await response.json();
+
+        if (result.download_url) {
+          statusText.innerHTML = "🧩 Processing... this may take up to 1-2 minutes.";
+          progressBar.style.width = "80%";
+
+          // Wait for FFmpeg to finish (poll every 5 seconds)
+          const checkReady = setInterval(async () => {
+            const res = await fetch("https://clipper-api-final.onrender.com" + result.download_url);
+            if (res.status === 200) {
+              clearInterval(checkReady);
+              progressBar.style.width = "100%";
+              statusText.innerHTML = `✅ Clip ready: <a href="https://clipper-api-final.onrender.com${result.download_url}" download>Download</a>`;
+            }
+          }, 5000);
+        } else {
+          statusText.innerHTML = "⚠️ Something went wrong. Please retry.";
+        }
+      } catch (err) {
+        statusText.innerHTML = "❌ Failed to connect. Please try again.";
+        console.error(err);
+      }
+    });
   </script>
 </body>
 </html>
