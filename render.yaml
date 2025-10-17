@@ -1,9 +1,18 @@
 services:
   - type: web
-    name: clipper-api-final
+    name: ptsel-clipper-api
     env: python
-    plan: free
+    plan: standard
+    region: oregon
     buildCommand: |
-      apt-get update && apt-get install -y ffmpeg
-      pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+      apt-get update && apt-get install -y ffmpeg && poetry install
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: clipper-storage
+      mountPath: /data
+      sizeGB: 20
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CLIP_STORAGE_PATH
+        value: "/data"
