@@ -1,18 +1,14 @@
 services:
   - type: web
-    name: clipper-api-final-1
+    name: clipper-api-final
     env: python
-    plan: standard
-    branch: main
-    startCommand: uvicorn app:app --host 0.0.0.0 --port 8000
+    plan: free
     buildCommand: pip install -r requirements.txt
-    autoDeploy: true
-
-    disk:
-      name: data-disk
-      mountPath: /data
-      sizeGB: 20
-
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.8
+    disk:
+      name: uploads
+      mountPath: /data
+      sizeGB: 5
