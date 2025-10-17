@@ -8,7 +8,6 @@ services:
     buildCommand: pip install -r requirements.txt
     autoDeploy: true
 
-    # Persistent disk for big files
     disk:
       name: data-disk
       mountPath: /data
@@ -16,6 +15,4 @@ services:
 
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.8      # or 3.10/3.12 supported by Render
-      - key: UVICORN_TIMEOUT_KEEP_ALIVE
-        value: "180"
+        value: 3.11.8
