@@ -1,115 +1,141 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="UTF-8">
   <title>PTSEL Clipper</title>
   <style>
-    body{background:#0b0f17;color:#fff;font-family:Inter,system-ui,Arial;margin:0;height:100vh;display:grid;place-items:center}
-    .card{background:#141a24;border-radius:16px;padding:28px;width:420px;box-shadow:0 10px 30px rgba(0,0,0,.35);text-align:center}
-    h1{margin:6px 0 14px 0;font-size:24px}
-    input,button{width:100%;padding:12px;border-radius:10px;border:1px solid #2a3446;background:#0f1420;color:#fff}
-    input::file-selector-button{background:#1f2a3d;color:#fff;border:0;padding:8px 10px;border-radius:8px;margin-right:10px}
-    .row{margin:10px 0}
-    .btn{background:#2e7df6;border:0;cursor:pointer;font-weight:600}
-    .btn:disabled{opacity:.6;cursor:not-allowed}
-    .note{font-size:12px;opacity:.8;margin-top:8px}
-    progress{width:100%;height:10px;border-radius:12px;overflow:hidden}
-    a{color:#36d7b7;font-weight:600;text-decoration:none}
+    body {
+      background: #0e0f11;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    .container {
+      background: #181a1d;
+      padding: 40px;
+      border-radius: 12px;
+      text-align: center;
+      width: 380px;
+      box-shadow: 0 0 20px #000;
+    }
+    input, button {
+      width: 100%;
+      padding: 10px;
+      margin: 8px 0;
+      border-radius: 6px;
+      border: none;
+    }
+    input {
+      background: #222;
+      color: #ccc;
+    }
+    button {
+      background: #007bff;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+    button:hover {
+      background: #0066d6;
+    }
+    progress {
+      width: 100%;
+      margin-top: 10px;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 0.9em;
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>🎬 PTSEL Clipper</h1>
-    <p style="opacity:.85">Upload a large video (hours ok), set Start & End (up to 60 min clip).</p>
-    <div class="row"><input id="file" type="file" accept="video/*"></div>
-    <div class="row"><input id="start" placeholder="Start (e.g. 00:05:00)"></div>
-    <div class="row"><input id="end" placeholder="End (e.g. 00:08:30)"></div>
-    <div class="row"><button id="go" class="btn">Trim</button></div>
-    <div class="row"><progress id="bar" max="100" value="0" style="display:none"></progress></div>
-    <div id="status" class="note"></div>
-    <div id="link" class="row"></div>
+  <div class="container">
+    <h2>🎬 PTSEL Clipper</h2>
+    <p>Upload a long video (supports 60+ mins)</p>
+    <input type="file" accept="video/*">
+    <input type="text" placeholder="Start (e.g. 00:05:00)">
+    <input type="text" placeholder="End (e.g. 00:08:30)">
+    <button>Trim</button>
+    <progress value="0" max="100" style="display:none;"></progress>
+    <div class="status"></div>
   </div>
 
-<script>
-const API = "https://clipper-api-final-1.onrender.com";
-const byId = id => document.getElementById(id);
-const goBtn = byId("go");
-const bar = byId("bar");
-const statusEl = byId("status");
-const linkEl = byId("link");
+  <script>
+  const trimButton = document.querySelector("button");
+  const progressBar = document.querySelector("progress");
+  const statusDiv = document.querySelector(".status");
 
-goBtn.addEventListener("click", async () => {
-  const file = byId("file").files[0];
-  const start = byId("start").value.trim();
-  const end = byId("end").value.trim();
-  if (!file) return alert("Pick a video first.");
-  if (!start || !end) return alert("Enter start and end times.");
+  const API_BASE = "https://clipper-api-final-1.onrender.com"; // ✅ your backend URL
 
-  goBtn.disabled = true; linkEl.innerHTML = ""; statusEl.textContent = "";
-  bar.style.display = "block"; bar.value = 0;
+  trimButton.addEventListener("click", startChunkUpload);
 
-  try {
-    // --- 1) Chunked upload ---
-    const chunkSize = 5 * 1024 * 1024; // 5 MB
-    const total = Math.ceil(file.size / chunkSize);
-    const uploadId = file.name + "-" + Date.now();
+  async function startChunkUpload() {
+    const file = document.querySelector('input[type="file"]').files[0];
+    const start = document.querySelectorAll('input')[1].value;
+    const end = document.querySelectorAll('input')[2].value;
 
-    for (let i = 0; i < total; i++) {
-      const s = i * chunkSize;
-      const e = Math.min(file.size, s + chunkSize);
-      const chunk = file.slice(s, e);
+    if (!file) return alert("Please choose a video file.");
+    if (!start || !end) return alert("Enter start and end times.");
 
-      const fd = new FormData();
-      fd.append("chunk", chunk);
-      fd.append("upload_id", uploadId);
-      fd.append("index", String(i));
-      fd.append("total", String(total));
+    const chunkSize = 5 * 1024 * 1024; // 5MB
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    progressBar.style.display = "block";
+    progressBar.max = totalChunks;
+    progressBar.value = 0;
+    statusDiv.textContent = "Uploading...";
 
-      const r = await fetch(`${API}/upload_chunk`, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(`Chunk ${i} failed`);
-      bar.value = Math.round(((i + 1) / total) * 100);
-      statusEl.textContent = `Uploading… ${i + 1}/${total}`;
+    for (let i = 0; i < totalChunks; i++) {
+      const startByte = i * chunkSize;
+      const endByte = Math.min(file.size, startByte + chunkSize);
+      const chunk = file.slice(startByte, endByte);
+
+      const formData = new FormData();
+      formData.append("chunk", chunk);
+      formData.append("filename", file.name);
+      formData.append("index", i);
+      formData.append("total", totalChunks);
+      formData.append("start_time", start);
+      formData.append("end_time", end);
+
+      try {
+        const res = await fetch(`${API_BASE}/upload_chunk`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) throw new Error("Chunk upload failed");
+        progressBar.value = i + 1;
+      } catch (err) {
+        statusDiv.textContent = "❌ Upload failed: " + err.message;
+        return;
+      }
     }
 
-    // --- 2) Merge + start background trim ---
-    const fd2 = new FormData();
-    fd2.append("upload_id", uploadId);
-    fd2.append("original_name", file.name);
-    fd2.append("start_time", start);
-    fd2.append("end_time", end);
-
-    const resp = await fetch(`${API}/merge_and_trim`, { method: "POST", body: fd2 });
-    if (!resp.ok) throw new Error("Merge/trim request failed");
-    const data = await resp.json();
-    statusEl.textContent = "Processing… trimming in background.";
-
-    // --- 3) Poll until ready ---
-    const url = API + data.download_url;
-    await waitUntil200(url, (tries) => statusEl.textContent = `Processing… (check ${tries})`);
-    statusEl.textContent = "✅ Clip ready!";
-    linkEl.innerHTML = `<a href="${url}" download>Download</a>`;
-  } catch (e) {
-    statusEl.textContent = "❌ " + e.message;
-  } finally {
-    goBtn.disabled = false;
-    bar.style.display = "none";
-  }
-});
-
-async function waitUntil200(url, onTick) {
-  let tries = 0;
-  while (true) {
-    tries++;
-    onTick?.(tries);
+    statusDiv.textContent = "Processing video...";
     try {
-      const r = await fetch(url, { method: "GET" });
-      if (r.status === 200) return;
-    } catch {}
-    await sleep(2000);
+      const res = await fetch(`${API_BASE}/merge_chunks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          start_time: start,
+          end_time: end,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.download_url) {
+        statusDiv.innerHTML = `✅ Clip ready! <a href="${API_BASE}${data.download_url}" target="_blank" style="color:#00ffcc;">Download here</a>`;
+      } else {
+        throw new Error(data.error || "Server error");
+      }
+    } catch (err) {
+      statusDiv.textContent = "❌ " + err.message;
+    }
   }
-}
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-</script>
+  </script>
 </body>
 </html>
