@@ -7,22 +7,22 @@ import time
 import threading
 
 # ======================================================
-# SETUP
+# APP SETUP
 # ======================================================
 
 app = FastAPI()
 
-# Allow frontend connection (local and hosted)
+# Allow both local + hosted frontend connections
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # change later to your frontend domain
+    allow_origins=["*"],  # you can later restrict this to your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ======================================================
-# FIXED PATHS (SAFE FOR RENDER)
+# RENDER-SAFE PATHS
 # ======================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +33,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLIP_DIR, exist_ok=True)
 
 # ======================================================
-# AUTO CLEAN OLD FILES
+# AUTO-CLEAN OLD FILES (24h)
 # ======================================================
 
 def auto_clean():
@@ -48,7 +48,7 @@ def auto_clean():
                         print(f"🧹 Deleted old file: {path}")
         except Exception as e:
             print(f"Cleanup error: {e}")
-        time.sleep(3600)  # every hour
+        time.sleep(3600)
 
 threading.Thread(target=auto_clean, daemon=True).start()
 
@@ -61,7 +61,7 @@ async def root():
     return {"message": "PTSEL Clipper API is live and running 🚀"}
 
 # ======================================================
-# MAIN CLIPPER ENDPOINT
+# CLIPPER ENDPOINT
 # ======================================================
 
 @app.post("/trim")
@@ -80,7 +80,8 @@ async def trim_video(
     try:
         timestamp = int(time.time())
         input_path = os.path.join(UPLOAD_DIR, f"input_{timestamp}.mp4")
-        output_path = os.path.join(CLIP_DIR, f"output_{timestamp}.mp4")
+        output_filename = f"output_{timestamp}.mp4"
+        output_path = os.path.join(CLIP_DIR, output_filename)
 
         # Save uploaded file
         if file:
@@ -110,26 +111,25 @@ async def trim_video(
 
         def run_ffmpeg():
             try:
-                print(f"🎬 Starting trim: {input_path}")
+                print(f"🎬 Trimming started: {input_path}")
                 subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 print(f"✅ Trim complete: {output_path}")
             except Exception as e:
                 print(f"FFmpeg failed: {e}")
 
-        # Run FFmpeg in background
         background_tasks.add_task(run_ffmpeg)
 
-        # Return download link
+        # ✅ Correct download URL (no double https)
         return JSONResponse({
             "message": "Processing started in background.",
-            "download_url": f"https://clipper-api-final.onrender.com/clips/output_{timestamp}.mp4"
+            "download_url": f"https://clipper-api-final.onrender.com/clips/{output_filename}"
         })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # ======================================================
-# DOWNLOAD CLIP
+# CLIP DOWNLOAD ENDPOINT
 # ======================================================
 
 @app.get("/clips/{filename}")
