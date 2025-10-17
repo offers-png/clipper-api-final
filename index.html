@@ -6,116 +6,106 @@
   <title>PTSEL Clipper</title>
   <style>
     body {
-      background-color: #0a0a1a;
+      background-color: #0d1117;
       color: white;
-      font-family: "Inter", sans-serif;
+      font-family: Arial, sans-serif;
       display: flex;
       justify-content: center;
       align-items: center;
       height: 100vh;
     }
-    .card {
-      background: #101020;
-      padding: 2rem;
-      border-radius: 16px;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
-      width: 400px;
+    .container {
+      background: #161b22;
+      padding: 30px;
+      border-radius: 12px;
       text-align: center;
+      width: 350px;
+      box-shadow: 0 0 10px #000;
     }
     input, button {
       width: 100%;
-      margin-top: 10px;
+      margin: 6px 0;
       padding: 10px;
       border-radius: 6px;
       border: none;
-      outline: none;
     }
     button {
       background-color: #2563eb;
       color: white;
-      cursor: pointer;
       font-weight: bold;
+      cursor: pointer;
     }
     button:hover {
-      background-color: #1e4ed8;
+      background-color: #1d4ed8;
     }
     #status {
       margin-top: 12px;
-      font-size: 0.95rem;
-    }
-    #download {
-      margin-top: 14px;
-      display: none;
-      color: #4ade80;
-      text-decoration: none;
-      font-weight: bold;
+      font-size: 14px;
+      color: #f87171;
     }
   </style>
 </head>
 <body>
-  <div class="card">
+  <div class="container">
     <h2>🎬 PTSEL Clipper</h2>
     <p>Upload a video or paste a YouTube link. Set Start & End. Max clip = 60 min.</p>
-    <form>
-      <label>Upload Video (mp4/mov/webm...)</label>
-      <input type="file" name="file" accept="video/*">
 
-      <p>— OR —</p>
-      <label>YouTube URL</label>
-      <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=...">
+    <label>Upload Video (mp4/mov/webm...)</label>
+    <input type="file" id="file" accept="video/*" />
 
-      <label>Start</label>
-      <input type="text" name="start" value="00:05">
+    <p>— OR —</p>
+    <label>YouTube URL</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." />
 
-      <label>End</label>
-      <input type="text" name="end" value="00:30">
+    <label>Start</label>
+    <input type="text" id="start" placeholder="00:05" />
 
-      <button type="submit">Trim</button>
-    </form>
-    <div id="status"></div>
-    <a id="download" href="#" download>Download</a>
+    <label>End</label>
+    <input type="text" id="end" placeholder="00:30" />
+
+    <button id="trimButton">Trim</button>
+    <p id="status"></p>
   </div>
 
-<script>
-document.getElementById("trimButton").addEventListener("click", async () => {
-  const fileInput = document.getElementById("file");
-  const urlInput = document.getElementById("url");
-  const start = document.getElementById("start").value;
-  const end = document.getElementById("end").value;
-  const status = document.getElementById("status");
-  status.innerText = "⏳ Uploading and processing...";
+  <script>
+  document.getElementById("trimButton").addEventListener("click", async () => {
+    const fileInput = document.getElementById("file");
+    const urlInput = document.getElementById("url");
+    const start = document.getElementById("start").value;
+    const end = document.getElementById("end").value;
+    const status = document.getElementById("status");
+    status.innerText = "⏳ Uploading and processing...";
 
-  const formData = new FormData();
-  if (fileInput.files.length > 0) formData.append("file", fileInput.files[0]);
-  if (urlInput.value) formData.append("url", urlInput.value);
-  formData.append("start", start);
-  formData.append("end", end);
+    const formData = new FormData();
+    if (fileInput.files.length > 0) formData.append("file", fileInput.files[0]);
+    if (urlInput.value) formData.append("url", urlInput.value);
+    formData.append("start", start);
+    formData.append("end", end);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000); // 2-minute timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
-  try {
-    const res = await fetch("https://clipper-api-final.onrender.com/trim", {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    });
+    try {
+      const res = await fetch("https://clipper-api-final.onrender.com/trim", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeout);
+      clearTimeout(timeout);
 
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Server error: ${res.status} - ${err}`);
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Server error: ${res.status} - ${err}`);
+      }
+
+      const data = await res.json();
+      status.innerHTML = `✅ Clip ready: <a href="https://clipper-api-final.onrender.com${data.download_url}" target="_blank" style="color:#22c55e;">Download</a>`;
+    } catch (err) {
+      status.innerText = "❌ " + err.message;
+      console.error("Trim error:", err);
     }
-
-    const data = await res.json();
-    status.innerHTML = `✅ Clip ready: <a href="https://clipper-api-final.onrender.com${data.download_url}" target="_blank">Download</a>`;
-  } catch (err) {
-    status.innerText = "❌ " + err.message;
-    console.error("Trim error:", err);
-  }
-});
-</script>
+  });
+  </script>
 </body>
 </html>
-
