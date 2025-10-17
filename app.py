@@ -6,10 +6,10 @@ import os
 import uuid
 import yt_dlp
 
-# --- Initialize app ---
+# === Initialize app ===
 app = FastAPI()
 
-# --- Enable CORS ---
+# === CORS middleware (frontend access) ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,15 +18,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# === Create folders ===
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "clips"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-# --- Time parser ---
+# === Time parser ===
 def parse_time(t: str) -> float:
-    """Convert flexible time formats into seconds (supports 5, 00:05, 00:00:05, etc.)"""
+    """Convert flexible time formats into seconds (supports 5, 00:05, 00:00:05)."""
     try:
         if not t:
             raise ValueError("Empty time string")
@@ -49,6 +50,7 @@ def parse_time(t: str) -> float:
         raise HTTPException(status_code=400, detail=f"Invalid time format: {t}")
 
 
+# === Main route to trim videos ===
 @app.post("/trim")
 async def trim_video(
     file: UploadFile = File(None),
@@ -74,6 +76,8 @@ async def trim_video(
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 input_path = ydl.prepare_filename(info)
+
+        # --- Handle direct file upload ---
         elif file:
             input_filename = f"{uuid.uuid4()}_{file.filename}"
             input_path = os.path.join(UPLOAD_DIR, input_filename)
@@ -82,10 +86,11 @@ async def trim_video(
         else:
             raise HTTPException(status_code=400, detail="No file or YouTube URL provided")
 
+        # --- Prepare output file ---
         output_filename = f"clip_{uuid.uuid4()}.mp4"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
 
-        # --- Trim with ffmpeg ---
+        # --- Run ffmpeg ---
         cmd = [
             "ffmpeg",
             "-ss", str(start_sec),
@@ -95,7 +100,7 @@ async def trim_video(
             "-c:a", "aac",
             "-strict", "experimental",
             output_path,
-            "-y"
+            "-y",
         ]
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
@@ -112,14 +117,16 @@ async def trim_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# === Download route ===
 @app.get("/download/{filename}")
 async def download_clip(filename: str):
     file_path = os.path.join(OUTPUT_DIR, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path)
+
+
+# === Health check route (must be left-aligned) ===
 @app.get("/")
 def root():
-    return {"status": "API is running", "trim_endpoint": "/trim"}
-
-
+    return {"status": "ok"}
