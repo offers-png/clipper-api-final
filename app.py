@@ -5,24 +5,24 @@ import subprocess
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
-
-app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 
-# Allow frontend to access backend (CORS fix)
+app = FastAPI()
+
+# ----------  CORS  ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ptsel-frontend.onrender.com"],  # You can use ["*"] for testing
+    allow_origins=["*"],   # or ["https://ptsel-frontend.onrender.com"] for strict mode
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Persistent storage for uploaded chunks
+# ----------  STORAGE  ----------
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# 🔧 Auto-cleanup: delete files older than 3 days
+# auto-cleanup every 3 days
 def auto_cleanup():
     now = datetime.now()
     for root, _, files in os.walk(UPLOAD_DIR):
@@ -31,80 +31,81 @@ def auto_cleanup():
             if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
                 os.remove(path)
 
+# ----------  ROUTES  ----------
 @app.get("/")
 def home():
     return {"status": "PTSEL Clipper running and optimized!"}
 
-# 🧩 Upload video chunks in parts (for large files)
-@app.post("/upload_chunk")
-async def upload_chunk(
-    chunk: UploadFile = File(...),
-    filename: str = Form(...),
-    index: int = Form(...),
-    total: int = Form(...),
-    start_time: str = Form(...),
-    end_time: str = Form(...)
-):
-    temp_dir = os.path.join(UPLOAD_DIR, filename)
-    os.makedirs(temp_dir, exist_ok=True)
-    chunk_path = os.path.join(temp_dir, f"{index}.part")
+@app.post("/clip")
+async def clip_video(file: UploadFile = File(...),
+                     start: str = Form(...),
+                     end: str = Form(...)):
 
-    with open(chunk_path, "wb") as f:
-        shutil.copyfileobj(chunk.file, f)
+    auto_cleanup()
 
-    return {"status": "ok", "chunk_index": index}
+    input_path = os.path.join(UPLOAD_DIR, file.filename)
+    output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file.filename}")
 
-# 🧠 Merge all chunks and trim asynchronously
-@app.post("/merge_chunks")
-async def merge_chunks(request: Request):
-    try:
-        data = await request.json()
-        filename = data["filename"]
-        start = data["start_time"]
-        end = data["end_time"]
+    # Save upload
+    with open(input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-        temp_dir = os.path.join(UPLOAD_DIR, filename)
-        merged_path = os.path.join(UPLOAD_DIR, filename)
-        output_path = os.path.join(UPLOAD_DIR, f"trimmed_{filename}")
+    # Run FFmpeg
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-ss", start, "-to", end,
+        "-c", "copy", output_path
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await process.communicate()
 
-        # Merge all chunks into one file
-        with open(merged_path, "wb") as merged:
-            for part in sorted(os.listdir(temp_dir), key=lambda x: int(x.split(".")[0])):
-                with open(os.path.join(temp_dir, part), "rb") as f:
-                    shutil.copyfileobj(f, merged)
+    return FileResponse(output_path, media_type="video/mp4",
+                        filename=f"trimmed_{file.filename}")
 
-        # 🚀 Run ffmpeg asynchronously (non-blocking + faster)
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-hide_banner",
-            "-hwaccel", "auto",                # use hardware acceleration if available
-            "-ss", start, "-to", end,
-            "-accurate_seek",                  # accurate cut
-            "-i", merged_path,
-            "-c:v", "libx264",                 # re-encode for reliability
-            "-preset", "ultrafast",            # prioritize speed
-            "-crf", "28",                      # quality vs speed trade-off
-            "-c:a", "aac", "-b:a", "128k",
-            output_path
-        )
-        await process.communicate()
+@app.post("/clip_link")
+async def clip_from_link(request: Request):
+    data = await request.json()
+    url = data.get("url")
+    start = data.get("start")
+    end = data.get("end")
 
-        # Delete chunk folder after merging
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    auto_cleanup()
+    temp_in = os.path.join(UPLOAD_DIR, "temp_download.mp4")
+    temp_out = os.path.join(UPLOAD_DIR, "trimmed_from_link.mp4")
 
-        # Clean old files automatically
-        auto_cleanup()
+    # download video via yt-dlp
+    await asyncio.create_subprocess_exec(
+        "yt-dlp", "-o", temp_in, url,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
 
-        return JSONResponse({"download_url": f"/download/{os.path.basename(output_path)}"})
+    # trim downloaded video
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", temp_in,
+        "-ss", start, "-to", end,
+        "-c", "copy", temp_out
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await process.communicate()
 
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return FileResponse(temp_out, media_type="video/mp4",
+                        filename="trimmed_from_link.mp4")
 
-# 📥 Download the finished clip
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(path):
-        return JSONResponse({"error": "File not found"}, status_code=404)
-    return FileResponse(path, filename=filename)
+@app.post("/whisper")
+async def transcribe(file: UploadFile = File(...)):
+    auto_cleanup()
+    path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
 
+    result = subprocess.run(
+        ["whisper", path, "--model", "base", "--language", "en"],
+        capture_output=True, text=True
+    )
+    return JSONResponse({"transcript": result.stdout or "Done."})
