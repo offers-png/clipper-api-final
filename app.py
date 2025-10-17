@@ -1,132 +1,91 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, UploadFile, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
 import subprocess
 import os
-import uuid
-import yt_dlp
+import time
 
-# === Initialize app ===
+# Create the app
 app = FastAPI()
 
-# === CORS middleware (frontend access) ===
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# === Create folders ===
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "clips"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Ensure folders exist
+os.makedirs("uploads", exist_ok=True)
+os.makedirs("clips", exist_ok=True)
 
 
-# === Time parser ===
-def parse_time(t: str) -> float:
-    """Convert flexible time formats into seconds (supports 5, 00:05, 00:00:05)."""
-    try:
-        if not t:
-            raise ValueError("Empty time string")
-
-        t = str(t).strip().replace("string", "").replace("'", "").replace('"', "")
-
-        if ":" not in t:
-            return float(t)
-
-        parts = [float(p) for p in t.split(":") if p.strip() != ""]
-        if len(parts) == 1:
-            return parts[0]
-        elif len(parts) == 2:
-            return parts[0] * 60 + parts[1]
-        elif len(parts) == 3:
-            return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        else:
-            raise ValueError
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"Invalid time format: {t}")
+@app.get("/")
+async def root():
+    return {"message": "PTSEL Clipper API running successfully 🚀"}
 
 
-# === Main route to trim videos ===
 @app.post("/trim")
 async def trim_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(None),
-    url: str = Form(""),
-    start: str = Form("0"),
-    end: str = Form("60"),
+    url: str = Form(None),
+    start: str = Form(...),
+    end: str = Form(...)
 ):
+    """
+    Trims or downloads video, runs ffmpeg in background, and returns a download URL.
+    Works with uploaded files or YouTube URLs.
+    """
+
     try:
-        start_sec = parse_time(start)
-        end_sec = parse_time(end)
-        if end_sec <= start_sec:
-            raise HTTPException(status_code=400, detail="End time must be greater than start time")
+        # Create unique file names
+        timestamp = int(time.time())
+        input_path = f"uploads/input_{timestamp}.mp4"
+        output_path = f"clips/output_{timestamp}.mp4"
 
-        input_path = None
-
-        # --- Handle YouTube URL ---
-        if url:
-            ydl_opts = {
-                "outtmpl": f"{UPLOAD_DIR}/%(id)s.%(ext)s",
-                "quiet": True,
-                "format": "best[ext=mp4]/best",
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                input_path = ydl.prepare_filename(info)
-
-        # --- Handle direct file upload ---
-        elif file:
-            input_filename = f"{uuid.uuid4()}_{file.filename}"
-            input_path = os.path.join(UPLOAD_DIR, input_filename)
+        # Save uploaded video
+        if file:
             with open(input_path, "wb") as f:
                 f.write(await file.read())
+
+        # Or download YouTube video if URL provided
+        elif url:
+            os.system(f"yt-dlp -f mp4 {url} -o {input_path}")
         else:
-            raise HTTPException(status_code=400, detail="No file or YouTube URL provided")
+            raise HTTPException(status_code=400, detail="No file or URL provided.")
 
-        # --- Prepare output file ---
-        output_filename = f"clip_{uuid.uuid4()}.mp4"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-
-        # --- Run ffmpeg ---
+        # FFmpeg command optimized for speed and compression
         cmd = [
             "ffmpeg",
-            "-ss", str(start_sec),
-            "-to", str(end_sec),
+            "-ss", start,
+            "-to", end,
             "-i", input_path,
             "-c:v", "libx264",
+            "-preset", "ultrafast",     # super fast encoding
+            "-crf", "28",               # good compression
             "-c:a", "aac",
-            "-strict", "experimental",
-            output_path,
-            "-y",
+            "-b:a", "128k",
+            "-movflags", "+faststart",  # allows instant playback
+            output_path
         ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
-        size_bytes = os.path.getsize(output_path)
+        # Function to run ffmpeg in background
+        def run_ffmpeg():
+            try:
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except Exception as e:
+                print(f"FFmpeg failed: {e}")
 
+        # Add background task (avoids Render timeouts)
+        background_tasks.add_task(run_ffmpeg)
+
+        # Return link immediately
         return JSONResponse({
-            "download_url": f"/download/{output_filename}",
-            "size_bytes": size_bytes
+            "message": "Processing started in background.",
+            "download_url": f"/clips/output_{timestamp}.mp4"
         })
 
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"FFmpeg failed: {e.stderr.decode()[:200]}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# === Download route ===
-@app.get("/download/{filename}")
-async def download_clip(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
-
-
-# === Health check route (must be left-aligned) ===
-@app.get("/")
-def root():
-    return {"status": "ok"}
+# Serve finished clips
+@app.get("/clips/{filename}")
+async def get_clip(filename: str):
+    clip_path = os.path.join("clips", filename)
+    if os.path.exists(clip_path):
+        return FileResponse(clip_path, media_type="video/mp4", filename=filename)
+    raise HTTPException(status_code=404, detail="Clip not found")
