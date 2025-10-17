@@ -118,7 +118,8 @@ async def download_clip(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path)
-    @app.get("/")
+@app.get("/")
 def root():
     return {"status": "API is running", "trim_endpoint": "/trim"}
+
 
