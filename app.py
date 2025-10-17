@@ -1,17 +1,31 @@
+import os
+import shutil
+import asyncio
+import subprocess
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
-import os, shutil, subprocess
 
 app = FastAPI()
 
+# ✅ Persistent storage for uploaded chunks
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# 🔧 Auto-cleanup: delete files older than 3 days
+def auto_cleanup():
+    now = datetime.now()
+    for root, _, files in os.walk(UPLOAD_DIR):
+        for file in files:
+            path = os.path.join(root, file)
+            if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
+                os.remove(path)
+
 @app.get("/")
 def home():
-    return {"status": "PTSEL Clipper running!"}
+    return {"status": "PTSEL Clipper running and optimized!"}
 
-# Upload each chunk
+# 🧩 Upload video chunks in parts (for large files)
 @app.post("/upload_chunk")
 async def upload_chunk(
     chunk: UploadFile = File(...),
@@ -24,61 +38,62 @@ async def upload_chunk(
     temp_dir = os.path.join(UPLOAD_DIR, filename)
     os.makedirs(temp_dir, exist_ok=True)
     chunk_path = os.path.join(temp_dir, f"{index}.part")
+
     with open(chunk_path, "wb") as f:
         shutil.copyfileobj(chunk.file, f)
+
     return {"status": "ok", "chunk_index": index}
 
-# Merge all chunks and trim
+# 🧠 Merge all chunks and trim asynchronously
 @app.post("/merge_chunks")
 async def merge_chunks(request: Request):
-    data = await request.json()
-    filename = data["filename"]
-    start = data["start_time"]
-    end = data["end_time"]
-    temp_dir = os.path.join(UPLOAD_DIR, filename)
-    merged_path = os.path.join(UPLOAD_DIR, filename)
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-    # Merge all chunks into one video file
-    with open(merged_path, "wb") as merged:
-        for part in sorted(os.listdir(temp_dir), key=lambda x: int(x.split(".")[0])):
-            with open(os.path.join(temp_dir, part), "rb") as f:
-                shutil.copyfileobj(f, merged)
-
-    # Trim the video with ffmpeg
-    output_path = os.path.join(UPLOAD_DIR, f"trimmed_{filename}")
     try:
-       subprocess.run(
-    [
-        "ffmpeg", "-y",
-        "-hide_banner",
-        "-hwaccel", "auto",          # use hardware acceleration if available
-        "-ss", start,
-        "-to", end,
-        "-accurate_seek",            # more precise cuts without full re-encode
-        "-i", merged_path,
-        "-c:v", "libx264",           # fast x264 encoding
-        "-preset", "ultrafast",      # prioritize speed
-        "-crf", "28",                # balance speed/quality
-        "-c:a", "aac",               # faster audio encode
-        "-b:a", "128k",
-        output_path
-    ],
-    check=True
-)
+        data = await request.json()
+        filename = data["filename"]
+        start = data["start_time"]
+        end = data["end_time"]
 
-    except subprocess.CalledProcessError:
-        return JSONResponse({"error": "Trimming failed"}, status_code=500)
+        temp_dir = os.path.join(UPLOAD_DIR, filename)
+        merged_path = os.path.join(UPLOAD_DIR, filename)
+        output_path = os.path.join(UPLOAD_DIR, f"trimmed_{filename}")
 
-    # Cleanup chunks
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    return JSONResponse({"download_url": f"/download/{os.path.basename(output_path)}"})
+        # Merge all chunks into one file
+        with open(merged_path, "wb") as merged:
+            for part in sorted(os.listdir(temp_dir), key=lambda x: int(x.split(".")[0])):
+                with open(os.path.join(temp_dir, part), "rb") as f:
+                    shutil.copyfileobj(f, merged)
 
-# Download the final clip
+        # 🚀 Run ffmpeg asynchronously (non-blocking + faster)
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y",
+            "-hide_banner",
+            "-hwaccel", "auto",                # use hardware acceleration if available
+            "-ss", start, "-to", end,
+            "-accurate_seek",                  # accurate cut
+            "-i", merged_path,
+            "-c:v", "libx264",                 # re-encode for reliability
+            "-preset", "ultrafast",            # prioritize speed
+            "-crf", "28",                      # quality vs speed trade-off
+            "-c:a", "aac", "-b:a", "128k",
+            output_path
+        )
+        await process.communicate()
+
+        # Delete chunk folder after merging
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        # Clean old files automatically
+        auto_cleanup()
+
+        return JSONResponse({"download_url": f"/download/{os.path.basename(output_path)}"})
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# 📥 Download the finished clip
 @app.get("/download/{filename}")
 async def download_file(filename: str):
     path = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(path):
         return JSONResponse({"error": "File not found"}, status_code=404)
     return FileResponse(path, filename=filename)
-
