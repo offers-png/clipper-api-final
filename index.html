@@ -62,39 +62,57 @@
     <div class="download-link" id="downloadLink"></div>
   </div>
 
-  <script>
-async function trimVideo() {
+<script>
+const trimButton = document.querySelector("button");
+trimButton.addEventListener("click", uploadVideo);
+
+async function uploadVideo() {
   const file = document.querySelector('input[type="file"]').files[0];
   const start = document.querySelectorAll('input')[1].value;
   const end = document.querySelectorAll('input')[2].value;
+
+  if (!file) return alert("Please select a file first.");
+
+  // Create progress bar
+  const progress = document.createElement("progress");
+  progress.value = 0;
+  progress.max = 100;
+  progress.style.width = "100%";
+  progress.style.marginTop = "10px";
+  document.body.appendChild(progress);
 
   const formData = new FormData();
   formData.append("file", file);
   formData.append("start", start);
   formData.append("end", end);
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 600000); // 10 min timeout
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "https://clipper-api-final-1.onrender.com/trim", true);
+  xhr.timeout = 600000; // 10 minutes
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) {
+      progress.value = (event.loaded / event.total) * 100;
+    }
+  };
 
-    const response = await fetch("https://clipper-api-final-1.onrender.com/trim", {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    });
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      const data = JSON.parse(xhr.responseText);
+      alert("✅ Clip ready! " + (data.download_url || "Processing done."));
+    } else {
+      alert("❌ Upload failed: " + xhr.statusText);
+    }
+  };
 
-    clearTimeout(timeout);
+  xhr.onerror = () => alert("❌ Network error. Check server logs.");
+  xhr.ontimeout = () => alert("⏰ Upload timed out. Try shorter clip.");
 
-    if (!response.ok) throw new Error("Server error");
-
-    const data = await response.json();
-    alert("✅ Trim started! Download link: " + data.download_url);
-  } catch (err) {
-    alert("❌ Error: " + err.message);
-  }
+  xhr.send(formData);
 }
 </script>
 
+
 </body>
 </html>
+
 
