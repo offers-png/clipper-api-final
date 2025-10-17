@@ -1,153 +1,146 @@
-import os
-import time
-import threading
-import subprocess
-import sys
-from fastapi import FastAPI, File, Form, UploadFile, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
+from fastapi import FastAPI, File, Form, UploadFile, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
+import os, shutil, time, subprocess, threading
 
-# ======================================================
-# STABLE PTSEL CLIPPER (FULL VERSION)
-# Supports large videos up to 5GB, persistent disk, auto-cleaner
-# ======================================================
+app = FastAPI()
 
-# Expand recursion + file limits
-sys.setrecursionlimit(10000)
-
-# Create FastAPI app
-app = FastAPI(title="PTSEL Clipper", version="2.0")
-
-# Enable compression & big uploads
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-# Allow frontend connections
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # change to your frontend domain when ready
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ======================================================
-# FOLDER SETUP (STABLE PERSISTENT DISK)
-# ======================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = "/data/uploads"
-CLIP_DIR = "/data/clips"
+# --- Persistent paths (Render disk mounted at /data) ---
+BASE = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+CHUNKS_DIR = os.path.join(BASE, "chunks")   # per-upload chunk folders
+UPLOADS_DIR = os.path.join(BASE, "uploads") # merged originals
+CLIPS_DIR   = os.path.join(BASE, "clips")   # finished clips
+for d in (CHUNKS_DIR, UPLOADS_DIR, CLIPS_DIR):
+    os.makedirs(d, exist_ok=True)
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(CLIP_DIR, exist_ok=True)
-
-# ======================================================
-# AUTO CLEAN OLD FILES (EVERY 24 HOURS)
-# ======================================================
-def auto_clean():
+# --- light hourly janitor to keep disk tidy (delete >48h files) ---
+def _janitor():
     while True:
-        try:
-            now = time.time()
-            for folder in [UPLOAD_DIR, CLIP_DIR]:
-                for f in os.listdir(folder):
-                    path = os.path.join(folder, f)
-                    if os.path.isfile(path) and now - os.path.getmtime(path) > 24 * 3600:
-                        os.remove(path)
-                        print(f"🧹 Deleted old file: {path}")
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-        time.sleep(3600)  # check hourly
+        cutoff = time.time() - 48*3600
+        for root in (CHUNKS_DIR, UPLOADS_DIR, CLIPS_DIR):
+            for name in os.listdir(root):
+                p = os.path.join(root, name)
+                try:
+                    if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                        os.remove(p)
+                    elif os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+        time.sleep(3600)
 
-threading.Thread(target=auto_clean, daemon=True).start()
+threading.Thread(target=_janitor, daemon=True).start()
 
-# ======================================================
-# ROOT ROUTE
-# ======================================================
 @app.get("/")
 async def root():
-    return {"message": "PTSEL Clipper API is live and stable 🚀"}
+    return {"message": "PTSEL Clipper is live 🚀"}
 
-# ======================================================
-# MAIN CLIPPER ENDPOINT
-# ======================================================
-@app.post("/trim")
-async def trim_video(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(None),
-    url: str = Form(None),
-    start: str = Form(...),
-    end: str = Form(...)
+# ---------------------------
+#  Chunked upload endpoints
+# ---------------------------
+
+@app.post("/upload_chunk")
+async def upload_chunk(
+    chunk: UploadFile = File(...),
+    upload_id: str = Form(...),   # any unique string (we'll use filename on the client)
+    index: int = Form(...),       # 0-based chunk index
+    total: int = Form(...),       # total number of chunks
 ):
     """
-    Handles trimming for uploaded videos or YouTube URLs.
-    Supports up to 5GB input files.
+    Save chunk i for upload_id into /chunks/<upload_id>/<i>.part
     """
-
+    folder = os.path.join(CHUNKS_DIR, upload_id)
+    os.makedirs(folder, exist_ok=True)
+    part_path = os.path.join(folder, f"{index}.part")
     try:
-        timestamp = int(time.time())
-        input_path = os.path.join(UPLOAD_DIR, f"input_{timestamp}.mp4")
-        output_path = os.path.join(CLIP_DIR, f"output_{timestamp}.mp4")
+        with open(part_path, "wb") as f:
+            shutil.copyfileobj(chunk.file, f)
+    finally:
+        await chunk.close()
 
-        # ======================================================
-        # Save uploaded file
-        # ======================================================
-        if file:
-            print(f"⬆️ Uploading file: {file.filename}")
-            with open(input_path, "wb") as f:
-                f.write(await file.read())
+    return {"ok": True, "received": index, "total": total}
 
-        # ======================================================
-        # Download from YouTube
-        # ======================================================
-        elif url:
-            print(f"📥 Downloading from YouTube: {url}")
-            os.system(f"yt-dlp -f mp4 {url} -o {input_path}")
-        else:
-            raise HTTPException(status_code=400, detail="No file or URL provided.")
+@app.post("/merge_and_trim")
+async def merge_and_trim(
+    background_tasks: BackgroundTasks,
+    upload_id: str = Form(...),   # same as used during chunking
+    original_name: str = Form(...),
+    start_time: str = Form(...),  # "HH:MM:SS" or "MM:SS"
+    end_time: str = Form(...),
+):
+    """
+    Merge all chunks for upload_id, then run ffmpeg in the background to create a clip.
+    Returns a predictable download URL which the frontend can poll until ready.
+    """
+    # 1) Merge chunks -> merged_path
+    chunks_folder = os.path.join(CHUNKS_DIR, upload_id)
+    if not os.path.isdir(chunks_folder):
+        raise HTTPException(status_code=400, detail="Chunks not found for this upload_id.")
 
-        # ======================================================
-        # FFmpeg Command (optimized for fast cutting)
-        # ======================================================
+    # ensure chunks are all present
+    parts = [f for f in os.listdir(chunks_folder) if f.endswith(".part")]
+    if not parts:
+        raise HTTPException(status_code=400, detail="No chunks to merge.")
+
+    # merged original
+    # use mp4 extension for ffmpeg convenience even if original was webm; ffmpeg detects by content
+    merged_path = os.path.join(UPLOADS_DIR, f"{int(time.time())}_{os.path.basename(original_name)}")
+    with open(merged_path, "wb") as merged:
+        for part_name in sorted(parts, key=lambda x: int(x.split(".")[0])):
+            with open(os.path.join(chunks_folder, part_name), "rb") as p:
+                shutil.copyfileobj(p, merged)
+
+    # 2) Prepare output (predictable) and background ffmpeg job
+    stamp = int(time.time())
+    out_name = f"clip_{stamp}.mp4"
+    out_path = os.path.join(CLIPS_DIR, out_name)
+
+    def _run_ffmpeg():
+        # fast, robust settings (ultrafast + reasonable quality)
         cmd = [
             "ffmpeg", "-y",
-            "-ss", start,
-            "-to", end,
-            "-i", input_path,
+            "-ss", start_time,
+            "-to", end_time,
+            "-i", merged_path,
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-crf", "28",
+            "-crf", "26",
             "-c:a", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
-            output_path
+            out_path
         ]
+        try:
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        except Exception as e:
+            # leave a small marker file to indicate failure if needed
+            with open(out_path + ".error.txt", "w") as f:
+                f.write(str(e))
 
-        def run_ffmpeg():
-            try:
-                print(f"🎬 Trimming started: {input_path}")
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                print(f"✅ Trim complete: {output_path}")
-            except Exception as e:
-                print(f"❌ FFmpeg failed: {e}")
+    background_tasks.add_task(_run_ffmpeg)
 
-        # Run in background so frontend doesn’t freeze
-        background_tasks.add_task(run_ffmpeg)
+    return JSONResponse({
+        "status": "processing",
+        "download_url": f"/clips/{out_name}"
+    })
 
-        # Return download link
-        return JSONResponse({
-            "message": "Processing started in background.",
-            "download_url": f"https://clipper-api-final-1.onrender.com/clips/output_{timestamp}.mp4"
-        })
+# ---------------------------
+#  Download serving
+# ---------------------------
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ======================================================
-# CLIP DOWNLOAD ROUTE
-# ======================================================
 @app.get("/clips/{filename}")
 async def get_clip(filename: str):
-    clip_path = os.path.join(CLIP_DIR, filename)
-    if os.path.exists(clip_path):
-        return FileResponse(clip_path, media_type="video/mp4", filename=filename)
-    raise HTTPException(status_code=404, detail="Clip not found")
+    path = os.path.join(CLIPS_DIR, filename)
+    if os.path.exists(path):
+        return FileResponse(path, media_type="video/mp4", filename=filename)
+    # return 404 with a simple JSON so the frontend can keep polling
+    raise HTTPException(status_code=404, detail="Clip not ready yet")
