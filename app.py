@@ -48,10 +48,14 @@ async def clip_video(
     start: str = Form(...),
     end: str = Form(...),
 ):
-    # Save the uploaded video
+    # Clean up any existing folder named after the upload
     file_path = os.path.join(UPLOAD_DIR, file.filename)
+    if os.path.isdir(file_path):
+        shutil.rmtree(file_path)  # delete folder if it exists
+
+    # Save uploaded video safely
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # This is where you’ll later run FFmpeg trimming logic
-    return {"status": f"File '{file.filename}' uploaded successfully!"}
+    # TODO: Add FFmpeg trimming logic here
+    return {"status": f"✅ File '{file.filename}' uploaded successfully!", "start": start, "end": end}
