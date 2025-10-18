@@ -1,22 +1,21 @@
 import os
 import shutil
-import asyncio
 import subprocess
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+import yt_dlp
 
-# ✅ Create the FastAPI app FIRST
+# ✅ Create app
 app = FastAPI()
 
-# ✅ CORS (connect backend with frontend)
+# ✅ Allow frontend
 origins = [
-    "https://ptsel-frontend.onrender.com",  # your Render frontend
-    "http://localhost:5173",                # optional local testing
+    "https://ptsel-frontend.onrender.com",
+    "http://localhost:5173",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -25,11 +24,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Upload directory setup
+# ✅ Upload folder
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ✅ Auto cleanup every 3 days
+# ✅ Cleanup old files
 def auto_cleanup():
     now = datetime.now()
     for root, _, files in os.walk(UPLOAD_DIR):
@@ -38,78 +37,54 @@ def auto_cleanup():
             if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
                 os.remove(path)
 
-# ✅ Initialize OpenAI client
+# ✅ OpenAI client (use your environment variable)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Routes
 @app.get("/")
 def home():
-    return {"status": "PTSEL Clipper + Upload + Transcript running and optimized!"}
+    return {"status": "PTSEL Clipper backend running ✅"}
 
-
-# ✅ Upload + Clip route
+# ✅ 1. Upload and trim local video
 @app.post("/clip")
-async def clip_video(
-    file: UploadFile = File(...),
-    start: str = Form(...),
-    end: str = Form(...),
-    transcribe: bool = Form(False)  # Optional: user can toggle transcription
-):
-    # Save upload safely
+async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
-    if os.path.isdir(file_path):
-        shutil.rmtree(file_path)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Parse and validate timestamps
-    start = start.strip()
-    end = end.strip()
-    if not start or not end:
-        return JSONResponse({"error": "Start or end time missing"}, status_code=400)
+    output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file.filename}")
+    cmd = ["ffmpeg", "-ss", start, "-to", end, "-i", file_path, "-c", "copy", output_path, "-y"]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return FileResponse(output_path, filename=f"trimmed_{file.filename}")
 
-    # Output path
-    output_filename = f"trimmed_{file.filename}"
-    output_path = os.path.join(UPLOAD_DIR, output_filename)
+# ✅ 2. Download from YouTube and trim
+@app.post("/clip_link")
+async def clip_youtube(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
+    output_path = os.path.join(UPLOAD_DIR, "yt_download.mp4")
 
-    # Run FFmpeg to trim the clip
-    cmd = [
-        "ffmpeg",
-        "-ss", start,         # Start time
-        "-to", end,           # End time
-        "-i", file_path,      # Input
-        "-c", "copy",         # Copy codecs (no re-encode)
-        output_path,
-        "-y"                  # Overwrite if exists
-    ]
-
+    # Download video using yt-dlp
+    ydl_opts = {"outtmpl": output_path, "format": "mp4"}
     try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": f"Failed to download: {str(e)}"}, status_code=500)
 
-    # ✅ Optional Transcription
-    transcript_text = ""
-    if transcribe:
-        try:
-            with open(output_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
-                    file=audio_file
-                )
-            transcript_text = transcript.text
-        except Exception as e:
-            return JSONResponse({"error": f"Transcription failed: {str(e)}"}, status_code=500)
+    # Trim it
+    trimmed_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
+    cmd = ["ffmpeg", "-ss", start, "-to", end, "-i", output_path, "-c", "copy", trimmed_path, "-y"]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return FileResponse(trimmed_path, filename="yt_trimmed.mp4")
 
-    # ✅ Return results
-    response_data = {
-        "message": "✅ Video clipped successfully!",
-        "clip_path": output_filename,
-        "transcript": transcript_text if transcribe else None
-    }
+# ✅ 3. Transcribe audio/video (AI Whisper)
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    return JSONResponse(response_data)
-
-
+    with open(file_path, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-mini-transcribe",
+            file=audio_file
+        )
+    return {"text": transcript.text}
