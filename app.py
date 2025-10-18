@@ -7,16 +7,19 @@ from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+origins = [
+    "https://ptsel-frontend.onrender.com",  # your frontend
+    "http://localhost:5173",                # optional, local testing
+]
 
-# ----------  CORS  ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # or ["https://ptsel-frontend.onrender.com"] for strict mode
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ----------  STORAGE  ----------
 UPLOAD_DIR = "/data/uploads"
@@ -109,3 +112,4 @@ async def transcribe(file: UploadFile = File(...)):
         capture_output=True, text=True
     )
     return JSONResponse({"transcript": result.stdout or "Done."})
+
