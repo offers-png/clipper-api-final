@@ -3,7 +3,4 @@ uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 yt-dlp==2025.1.26
 ffmpeg-python==0.2.0
-git add requirements.txt
-git commit -m "Add OpenAI dependency"
-git push
-
+openai>=1.3.0
