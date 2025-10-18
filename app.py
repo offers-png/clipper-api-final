@@ -54,11 +54,13 @@ async def clip_video_url(
 
         # Download video using yt-dlp
         ytdlp_cmd = [
-            "yt-dlp",
-            "-f", "mp4",
-            "-o", video_path,
-            url
-        ]
+    "yt-dlp",
+    "-f", "bestvideo+bestaudio",
+    "--merge-output-format", "mp4",
+    "-o", video_path,
+    url
+]
+
         subprocess.run(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if not os.path.exists(video_path):
@@ -87,3 +89,4 @@ async def clip_video_url(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
