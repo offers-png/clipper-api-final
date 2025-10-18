@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
 
 # ✅ Create the FastAPI app FIRST
 app = FastAPI()
@@ -37,17 +38,22 @@ def auto_cleanup():
             if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
                 os.remove(path)
 
+# ✅ Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 # ✅ Routes
 @app.get("/")
 def home():
-    return {"status": "PTSEL Clipper running and optimized!"}
+    return {"status": "PTSEL Clipper + Upload + Transcript running and optimized!"}
 
 
+# ✅ Upload + Clip route
 @app.post("/clip")
 async def clip_video(
     file: UploadFile = File(...),
     start: str = Form(...),
     end: str = Form(...),
+    transcribe: bool = Form(False)  # Optional: user can toggle transcription
 ):
     # Save upload safely
     file_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -84,5 +90,24 @@ async def clip_video(
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Return trimmed file
-    return FileResponse(output_path, filename=output_filename)
+    # ✅ Optional Transcription
+    transcript_text = ""
+    if transcribe:
+        try:
+            with open(output_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="gpt-4o-mini-transcribe",
+                    file=audio_file
+                )
+            transcript_text = transcript.text
+        except Exception as e:
+            return JSONResponse({"error": f"Transcription failed: {str(e)}"}, status_code=500)
+
+    # ✅ Return results
+    response_data = {
+        "message": "✅ Video clipped successfully!",
+        "clip_path": output_filename,
+        "transcript": transcript_text if transcribe else None
+    }
+
+    return JSONResponse(response_data)
