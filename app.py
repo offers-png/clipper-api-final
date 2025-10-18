@@ -42,47 +42,48 @@ def auto_cleanup():
 def home():
     return {"status": "PTSEL Clipper running and optimized!"}
 
-@app.post("/clip")
-async def clip_video(
-    file: UploadFile = File(...),
+@app.post("/clip_url")
+async def clip_video_url(
+    url: str = Form(...),
     start: str = Form(...),
     end: str = Form(...),
 ):
-    # Save upload safely
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    if os.path.isdir(file_path):
-        shutil.rmtree(file_path)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # Parse and validate timestamps
-    start = start.strip()
-    end = end.strip()
-    if not start or not end:
-        return JSONResponse({"error": "Start or end time missing"}, status_code=400)
-
-    # Output path
-    output_filename = f"trimmed_{file.filename}"
-    output_path = os.path.join(UPLOAD_DIR, output_filename)
-
-    # Run FFmpeg to trim the clip
-    cmd = [
-        "ffmpeg",
-        "-ss", start,           # Start time
-        "-to", end,             # End time
-        "-i", file_path,        # Input
-        "-c", "copy",           # Copy codecs (no re-encode)
-        output_path,
-        "-y"                    # Overwrite if exists
-    ]
-
     try:
+        # Create temp folder
+        video_path = os.path.join(UPLOAD_DIR, "downloaded_video.mp4")
+
+        # Download video using yt-dlp
+        ytdlp_cmd = [
+            "yt-dlp",
+            "-f", "mp4",
+            "-o", video_path,
+            url
+        ]
+        subprocess.run(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if not os.path.exists(video_path):
+            return JSONResponse({"error": "Failed to download video"}, status_code=500)
+
+        # Output trimmed file
+        output_filename = f"trimmed_from_url.mp4"
+        output_path = os.path.join(UPLOAD_DIR, output_filename)
+
+        # FFmpeg trim
+        cmd = [
+            "ffmpeg",
+            "-ss", start,
+            "-to", end,
+            "-i", video_path,
+            "-c", "copy",
+            output_path,
+            "-y"
+        ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
         if result.returncode != 0:
             return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
+
+        return FileResponse(output_path, filename=output_filename)
+
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
-    # Return trimmed file
-    return FileResponse(output_path, filename=output_filename)
-
