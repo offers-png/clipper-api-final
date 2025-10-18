@@ -49,42 +49,52 @@ async def clip_video_url(
     end: str = Form(...),
 ):
     try:
-        # Create temp folder
-        video_path = os.path.join(UPLOAD_DIR, "downloaded_video.mp4")
+        # Clean up old files
+        for f in os.listdir(UPLOAD_DIR):
+            if f.startswith("downloaded_video"):
+                os.remove(os.path.join(UPLOAD_DIR, f))
 
-        # Download video using yt-dlp
+        # --- 1. Download video properly ---
+        video_path = os.path.join(UPLOAD_DIR, "downloaded_video.%(ext)s")
         ytdlp_cmd = [
-    "yt-dlp",
-    "-f", "bestvideo+bestaudio",
-    "--merge-output-format", "mp4",
-    "-o", video_path,
-    url
-]
+            "yt-dlp",
+            "-f", "bestvideo+bestaudio",
+            "--merge-output-format", "mp4",
+            "-o", video_path,
+            url
+        ]
+        result = subprocess.run(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            return JSONResponse({"error": f"yt-dlp failed: {result.stderr}"}, status_code=500)
 
-        subprocess.run(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Detect actual saved file
+        actual_video_path = None
+        for f in os.listdir(UPLOAD_DIR):
+            if f.startswith("downloaded_video") and f.endswith(".mp4"):
+                actual_video_path = os.path.join(UPLOAD_DIR, f)
+                break
 
-        if not os.path.exists(video_path):
-            return JSONResponse({"error": "Failed to download video"}, status_code=500)
+        if not actual_video_path or os.path.getsize(actual_video_path) < 500000:
+            return JSONResponse({"error": "Downloaded file missing or empty."}, status_code=500)
 
-        # Output trimmed file
-        output_filename = f"trimmed_from_url.mp4"
+        # --- 2. Trim video (re-encode) ---
+        output_filename = "trimmed_from_url.mp4"
         output_path = os.path.join(UPLOAD_DIR, output_filename)
-
-        # FFmpeg trim
         cmd = [
             "ffmpeg",
             "-ss", start,
             "-to", end,
-            "-i", video_path,
-            "-c", "copy",
-            output_path,
-            "-y"
+            "-i", actual_video_path,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            "-y", output_path
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        trim_result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if trim_result.returncode != 0:
+            return JSONResponse({"error": f"FFmpeg failed: {trim_result.stderr}"}, status_code=500)
 
-        if result.returncode != 0:
-            return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
-
+        # --- 3. Return the trimmed file ---
         return FileResponse(output_path, filename=output_filename)
 
     except Exception as e:
