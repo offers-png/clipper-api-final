@@ -16,6 +16,11 @@ origins = [
     "https://ptsel-frontend.onrender.com",  # your Render frontend
     "http://localhost:5173",                # optional local testing
 ]
+fastapi
+uvicorn
+ffmpeg-python
+python-multipart
+openai>=1.3.0
 
 app.add_middleware(
     CORSMiddleware,
@@ -111,3 +116,4 @@ async def clip_video(
     }
 
     return JSONResponse(response_data)
+
