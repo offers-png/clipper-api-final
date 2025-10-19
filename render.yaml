@@ -14,3 +14,4 @@ services:
       name: uploads
       mountPath: /data
       sizeGB: 5
+
