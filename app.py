@@ -1,9 +1,13 @@
-import os, shutil, subprocess, yt_dlp, asyncio
+import os
+import shutil
+import subprocess
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+import yt_dlp
 
 # ========================
 # ✅ SETUP
@@ -29,18 +33,18 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ========================
-# ✅ AUTO CLEANUP (3 days)
+# 🧹 AUTO CLEANUP (3 days)
 # ========================
 def auto_cleanup():
     now = datetime.now()
     for root, _, files in os.walk(UPLOAD_DIR):
         for file in files:
             path = os.path.join(root, file)
-            if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
-                try:
+            try:
+                if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
                     os.remove(path)
-                except Exception as e:
-                    print(f"Cleanup failed: {e}")
+            except Exception as e:
+                print(f"Cleanup failed for {path}: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -51,10 +55,14 @@ def home():
     return {"status": "PTSEL Clipper backend combined and running ✅"}
 
 # ========================
-# 🎬 1. Upload + Trim
+# 🎬 1. UPLOAD + TRIM VIDEO
 # ========================
 @app.post("/clip")
-async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
+async def clip_video(
+    file: UploadFile = File(...),
+    start: str = Form(...),
+    end: str = Form(...)
+):
     try:
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
@@ -65,47 +73,57 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
 
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end, "-i", file_path,
+            "-ss", start, "-to", end,
+            "-i", file_path,
             "-c", "copy", "-y", output_path
         ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0:
             return JSONResponse({"error": result.stderr}, status_code=500)
+
         return FileResponse(output_path, filename=output_filename)
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ========================
-# 🔗 2. Clip from YouTube URL
+# 🔗 2. CLIP FROM YOUTUBE URL
 # ========================
 @app.post("/clip_link")
-async def clip_youtube(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
+async def clip_youtube(
+    url: str = Form(...),
+    start: str = Form(...),
+    end: str = Form(...)
+):
     try:
         source_path = os.path.join(UPLOAD_DIR, "yt_source.mp4")
         output_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
 
+        # Download video from YouTube
         ydl_opts = {"outtmpl": source_path, "format": "mp4"}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
+        # Trim the clip
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end, "-i", source_path,
+            "-ss", start, "-to", end,
+            "-i", source_path,
             "-c", "copy", "-y", output_path
         ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0:
             return JSONResponse({"error": result.stderr}, status_code=500)
+
         return FileResponse(output_path, filename="yt_trimmed.mp4")
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ========================
-# 🧠 3. Whisper Transcription
+# 🧠 3. WHISPER TRANSCRIPTION
 # ========================
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
@@ -119,7 +137,16 @@ async def transcribe_audio(file: UploadFile = File(...)):
                 model="gpt-4o-mini-transcribe",
                 file=audio_file
             )
+
         return {"text": transcript.text}
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+# ========================
+# 🚀 RUN SERVER (Render)
+# ========================
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))  # Render auto-assigns port
+    uvicorn.run(app, host="
