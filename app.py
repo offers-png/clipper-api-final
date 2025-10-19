@@ -144,9 +144,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ========================
-# 🚀 RUN SERVER (Render)
+# 🚀 AUTO PORT BINDING FOR RENDER
 # ========================
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))  # Render auto-assigns port
-    uvicorn.run(app, host="
+    port = int(os.getenv("PORT", 8000))  # Render injects PORT automatically
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
