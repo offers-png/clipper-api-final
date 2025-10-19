@@ -17,7 +17,6 @@ app.add_middleware(
 
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @app.post("/transcribe")
