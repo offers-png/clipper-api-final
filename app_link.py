@@ -21,25 +21,23 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @app.post("/clip_link")
 async def clip_youtube(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
-        yt_path = os.path.join(UPLOAD_DIR, "yt_source.mp4")
-        ydl_opts = {"outtmpl": yt_path, "format": "mp4"}
+        video_path = os.path.join(UPLOAD_DIR, "yt_source.mp4")
+        trimmed_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
+
+        ydl_opts = {"outtmpl": video_path, "format": "mp4"}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        trimmed_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", start,
-            "-to", end,
-            "-i", yt_path,
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            trimmed_path
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-ss", start, "-to", end,
+            "-i", video_path,
+            "-c", "copy", "-y", trimmed_path
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0:
-            return JSONResponse({"error": result.stderr.decode("utf-8")}, status_code=500)
+            return JSONResponse({"error": result.stderr}, status_code=500)
 
         return FileResponse(trimmed_path, filename="yt_trimmed.mp4")
 
