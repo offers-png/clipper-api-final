@@ -15,8 +15,8 @@ import yt_dlp
 app = FastAPI()
 
 origins = [
-    "https://ptsel-frontend.onrender.com",
-    "http://localhost:5173"
+    "https://ptsel-frontend.onrender.com",  # Frontend URL
+    "http://localhost:5173"                 # Local testing
 ]
 
 app.add_middleware(
@@ -43,6 +43,7 @@ def auto_cleanup():
             try:
                 if os.path.getmtime(path) < (now - timedelta(days=3)).timestamp():
                     os.remove(path)
+                    print(f"🧹 Deleted old file: {path}")
             except Exception as e:
                 print(f"Cleanup failed for {path}: {e}")
 
@@ -58,11 +59,7 @@ def home():
 # 🎬 1. UPLOAD + TRIM VIDEO
 # ========================
 @app.post("/clip")
-async def clip_video(
-    file: UploadFile = File(...),
-    start: str = Form(...),
-    end: str = Form(...)
-):
+async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
     try:
         file_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
@@ -91,21 +88,17 @@ async def clip_video(
 # 🔗 2. CLIP FROM YOUTUBE URL
 # ========================
 @app.post("/clip_link")
-async def clip_youtube(
-    url: str = Form(...),
-    start: str = Form(...),
-    end: str = Form(...)
-):
+async def clip_youtube(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
         source_path = os.path.join(UPLOAD_DIR, "yt_source.mp4")
         output_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
 
-        # Download video from YouTube
-        ydl_opts = {"outtmpl": source_path, "format": "mp4"}
+        # Download video
+        ydl_opts = {"outtmpl": source_path, "format": "mp4", "quiet": True, "no_warnings": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        # Trim the clip
+        # Trim clip
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
@@ -144,11 +137,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ========================
-# 🚀 AUTO PORT BINDING FOR RENDER
+# 🚀 AUTO PORT BINDING (RENDER)
 # ========================
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))  # Render injects PORT automatically
+    port = int(os.getenv("PORT", 8000))  # Render auto-assigns port
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
