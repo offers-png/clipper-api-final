@@ -40,14 +40,16 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
             output_path
         ]
 
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         if result.returncode != 0:
-            print("FFMPEG ERROR:", result.stderr)
-            return JSONResponse({"error": result.stderr}, status_code=500)
+            # Decode the stderr bytes to string before returning
+            err_msg = result.stderr.decode("utf-8", errors="ignore")
+            print("FFMPEG ERROR:", err_msg)
+            return JSONResponse({"error": err_msg}, status_code=500)
 
         if not os.path.exists(output_path):
-            return JSONResponse({"error": "No output file created."}, status_code=500)
+            return JSONResponse({"error": "Output file not created."}, status_code=500)
 
         return FileResponse(output_path, filename=f"trimmed_{file.filename}")
 
