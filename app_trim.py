@@ -4,10 +4,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-origins = ["https://ptsel-frontend.onrender.com", "http://localhost:5173"]
+
+origins = [
+    "https://ptsel-frontend.onrender.com",
+    "http://localhost:5173"
+]
+
 app.add_middleware(
-    CORSMiddleware, allow_origins=origins, allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 UPLOAD_DIR = "/data/uploads"
@@ -15,17 +23,33 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @app.post("/clip")
 async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file.filename}")
-    cmd = [
-        "ffmpeg", "-y", "-ss", start, "-to", end,
-        "-y","-i", file_path, "-c:v", "libx264", "-c:a", "aac", output_path
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if not os.path.exists(output_path):
-    return JSONResponse({"error": "No output generated"}, status_code=500)
+        output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file.filename}")
 
-    return FileResponse(output_path, filename=f"trimmed_{file.filename}")
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", start,
+            "-to", end,
+            "-i", file_path,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            output_path
+        ]
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if result.returncode != 0:
+            print("FFMPEG ERROR:", result.stderr)
+            return JSONResponse({"error": result.stderr}, status_code=500)
+
+        if not os.path.exists(output_path):
+            return JSONResponse({"error": "No output file created."}, status_code=500)
+
+        return FileResponse(output_path, filename=f"trimmed_{file.filename}")
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
