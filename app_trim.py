@@ -22,7 +22,7 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
     output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file.filename}")
     cmd = [
         "ffmpeg", "-y", "-ss", start, "-to", end,
-        "-i", file_path, "-c:v", "libx264", "-c:a", "aac", output_path
+        "-y","-i", file_path, "-c:v", "libx264", "-c:a", "aac", output_path
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
