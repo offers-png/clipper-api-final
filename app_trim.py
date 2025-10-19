@@ -25,6 +25,7 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         "-y","-i", file_path, "-c:v", "libx264", "-c:a", "aac", output_path
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        return JSONResponse({"error": result.stderr}, status_code=500)
+    if not os.path.exists(output_path):
+    return JSONResponse({"error": "No output generated"}, status_code=500)
+
     return FileResponse(output_path, filename=f"trimmed_{file.filename}")
