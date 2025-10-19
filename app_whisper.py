@@ -5,14 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
 app = FastAPI()
+
 origins = ["https://ptsel-frontend.onrender.com", "http://localhost:5173"]
 app.add_middleware(
-    CORSMiddleware, allow_origins=origins, allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @app.post("/transcribe")
