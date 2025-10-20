@@ -1,22 +1,22 @@
 # ==== Base image ====
 FROM python:3.11-slim
 
-# ==== Install system dependencies ====
+# ==== Install system packages ====
 RUN apt-get update && apt-get install -y ffmpeg streamlink && rm -rf /var/lib/apt/lists/*
 
-# ==== Set working directory ====
+# ==== Working directory ====
 WORKDIR /app
 
-# ==== Copy all project files ====
+# ==== Copy project files ====
 COPY . .
 
 # ==== Install Python dependencies ====
 RUN pip install -U pip
 RUN pip install -U fastapi uvicorn yt-dlp
-RUN yt-dlp -U
+RUN yt-dlp -U  # keep extractors fresh
 
-# ==== Expose port ====
+# ==== Expose app port ====
 EXPOSE 10000
 
-# ==== Start server ====
+# ==== Start FastAPI server ====
 CMD ["uvicorn", "app_link:app", "--host", "0.0.0.0", "--port", "10000"]
