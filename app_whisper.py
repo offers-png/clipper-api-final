@@ -10,7 +10,12 @@ from openai import OpenAI
 app = FastAPI()
 client = OpenAI()
 
-origins = ["https://ptsel-frontend.onrender.com", "http://localhost:5173"]
+# ✅ Allow both frontend and backend domains
+origins = [
+    "https://ptsel-frontend.onrender.com",
+    "https://clipper-api-final-1.onrender.com",
+    "http://localhost:5173"
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,29 +31,36 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         tmp_path = None
         audio_path = None
 
-        # ✅ Save the uploaded or downloaded file
+        # ✅ Ensure /tmp exists inside Docker container
+        os.makedirs("/tmp", exist_ok=True)
+
+        # ✅ Save uploaded or downloaded file
         if file:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
                 tmp.write(await file.read())
                 tmp_path = tmp.name
+
         elif url:
             response = requests.get(url, stream=True)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     tmp.write(chunk)
                 tmp_path = tmp.name
+
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
-        # ✅ Convert to MP3 before sending to Whisper
-        audio_path = tmp_path.replace(".webm", ".mp3")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_path, "-vn", "-acodec", "mp3", audio_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        # ✅ Convert to MP3 (audio only)
+        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+        convert_cmd = [
+            "ffmpeg", "-y", "-i", tmp_path, "-vn", "-acodec", "mp3", audio_path
+        ]
+        result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # ✅ Send the converted file to Whisper
+        if result.returncode != 0 or not os.path.exists(audio_path):
+            raise Exception("FFmpeg failed to create audio file")
+
+        # ✅ Send the converted audio to Whisper
         with open(audio_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -56,12 +68,16 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 response_format="text"
             )
 
-        os.remove(tmp_path)
-        os.remove(audio_path)
+        # ✅ Clean up temp files
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
 
+        # ✅ Return transcript text
         text_output = transcript.strip() if transcript else ""
         if not text_output:
-            return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"} )
+            return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"})
 
         return JSONResponse({"text": text_output})
 
