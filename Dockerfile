@@ -2,7 +2,6 @@
 # Dockerfile for Clipper AI
 # ==============================
 
-# Base image
 FROM python:3.11-slim
 
 # Install system tools
@@ -16,7 +15,7 @@ COPY . .
 
 # Install Python dependencies
 RUN pip install -U pip
-RUN pip install -U fastapi uvicorn yt-dlp
+RUN pip install -U fastapi uvicorn yt-dlp python-multipart
 RUN yt-dlp -U
 
 # Expose port
