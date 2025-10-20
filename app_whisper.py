@@ -1,6 +1,6 @@
 import openai
 import os
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -26,16 +26,19 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 @app.post("/transcribe")
 async def clip_whisper(file: UploadFile = File(...)):
     try:
-        # save uploaded file
         input_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # --- real whisper API call ---
-        with open(input_path, "rb") as audio:
-            transcript = openai.Audio.transcriptions.create(
+        # 🔥 Force simple audio conversion for video files
+        wav_path = input_path + ".wav"
+        os.system(f"ffmpeg -y -i '{input_path}' -ar 16000 -ac 1 '{wav_path}'")
+
+        # --- real Whisper API call ---
+        with open(wav_path, "rb") as audio_file:
+            transcript = openai.audio.transcriptions.create(
                 model="whisper-1",
-                file=audio
+                file=audio_file
             )
 
         text = transcript.text if hasattr(transcript, "text") else "(no text found)"
