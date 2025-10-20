@@ -21,6 +21,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+with open(tmp_path, "rb") as audio_file:
+    transcript = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio_file,
+        response_format="text"
+    )
+
+print("🧾 TRANSCRIPT RESULT:", repr(transcript))  # 👈 add this line
+os.remove(tmp_path)
+return JSONResponse({"text": transcript.strip()})
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
