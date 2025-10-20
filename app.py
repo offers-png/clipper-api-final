@@ -4,15 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 import subprocess
+import yt_dlp
 
 app = FastAPI()
 
-# ✅ Allow requests from your frontend (CORS setup)
+# ✅ CORS setup
 origins = [
-    "https://ptsel-frontend.onrender.com",  # your Render frontend
-    "http://localhost:5173",                # optional local dev
+    "https://ptsel-frontend.onrender.com",
+    "http://localhost:5173",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -21,11 +21,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Upload folder setup ---
+# ✅ Upload folder
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# --- Helper function to trim video ---
+# ✅ FFmpeg helper
 def run_ffmpeg(input_path, start, end, output_path):
     cmd = [
         "ffmpeg",
@@ -38,53 +38,47 @@ def run_ffmpeg(input_path, start, end, output_path):
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-
-# --- YouTube & Direct URL Handler ---
+# ✅ YouTube or direct URL clip route
 @app.post("/clip_link")
 async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
-        video_id = None
-        temp_input = None
-        temp_output = None
+        video_id = url.split("v=")[-1] if "v=" in url else url.split("/")[-1]
+        input_path = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
+        output_path = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
 
-        # --- YouTube Links ---
+        # --- YOUTUBE LINKS ---
         if "youtube.com" in url or "youtu.be" in url:
             try:
-                # ✅ Extract video ID
-                video_id = url.split("v=")[-1] if "v=" in url else url.split("/")[-1]
-
-                # ✅ Use a public ytproxy API (no login/cookies needed)
-                proxy_api = f"https://api.ytdlproxy.workers.dev/?id={video_id}"
-
-                res = requests.get(proxy_api, timeout=10)
-                data = res.json()
-
-                video_url = data.get("url")
-                if not video_url:
-                    raise ValueError("Failed to get direct video URL from proxy API.")
-
-                temp_input = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
-                temp_output = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
-
-                # Download and trim
-                with requests.get(video_url, stream=True) as r:
-                    r.raise_for_status()
-                    with open(temp_input, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-
-                run_ffmpeg(temp_input, start, end, temp_output)
-
-                return FileResponse(
-                    temp_output,
-                    media_type="video/mp4",
-                    filename=f"trimmed_{video_id}.mp4"
-                )
-
+                print("Attempting YouTube download via yt_dlp...")
+                ydl_opts = {
+                    "outtmpl": input_path,
+                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+                    "quiet": True,
+                    "noplaylist": True,
+                    "nocheckcertificate": True,
+                    "geo_bypass": True,
+                    "retries": 3,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
             except Exception as e:
-                return JSONResponse({"error": f"Proxy YouTube fetch failed: {str(e)}"}, status_code=500)
+                # --- Retry with cookies bypass ---
+                print(f"yt_dlp failed, retrying with bypass... {e}")
+                ydl_opts["cookiefile"] = None
+                ydl_opts["source_address"] = "0.0.0.0"
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
 
-        # --- Non-YouTube direct video URLs ---
+            # ✅ Trim
+            run_ffmpeg(input_path, start, end, output_path)
+
+            return FileResponse(
+                output_path,
+                media_type="video/mp4",
+                filename=f"trimmed_{video_id}.mp4"
+            )
+
+        # --- DIRECT VIDEO LINKS ---
         else:
             filename = os.path.join(UPLOAD_DIR, "temp_video.mp4")
             output_path = os.path.join(UPLOAD_DIR, "trimmed_output.mp4")
