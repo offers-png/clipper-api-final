@@ -1,22 +1,26 @@
-# ==== Base image ====
+# ==============================
+# Dockerfile for Clipper AI
+# ==============================
+
+# Base image
 FROM python:3.11-slim
 
-# ==== Install system packages ====
+# Install system tools
 RUN apt-get update && apt-get install -y ffmpeg streamlink && rm -rf /var/lib/apt/lists/*
 
-# ==== Working directory ====
+# Set working directory
 WORKDIR /app
 
-# ==== Copy project files ====
+# Copy project files
 COPY . .
 
-# ==== Install Python dependencies ====
+# Install Python dependencies
 RUN pip install -U pip
 RUN pip install -U fastapi uvicorn yt-dlp
-RUN yt-dlp -U  # keep extractors fresh
+RUN yt-dlp -U
 
-# ==== Expose app port ====
+# Expose port
 EXPOSE 10000
 
-# ==== Start FastAPI server ====
+# Start the FastAPI server
 CMD ["uvicorn", "app_link:app", "--host", "0.0.0.0", "--port", "10000"]
