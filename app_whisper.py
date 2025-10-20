@@ -32,35 +32,41 @@ async def transcribe(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # ✅ Convert to a clean mono WAV (16kHz)
+        # ✅ Convert video/audio → WAV using PCM 16-bit LE (mono, 16kHz)
         wav_path = os.path.splitext(input_path)[0] + ".wav"
-        subprocess.run([
-            "ffmpeg", "-y", "-i", input_path,
-            "-vn", "-acodec", "pcm_s16le",
-            "-ar", "16000", "-ac", "1", wav_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            "-f", "wav",
+            wav_path
+        ]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
-        # ✅ Load audio as bytes to avoid file pointer issues on Render
+        # ✅ Load the WAV file as bytes
         with open(wav_path, "rb") as f:
             audio_bytes = io.BytesIO(f.read())
 
-        # ✅ Real Whisper transcription
-        transcript = openai.Audio.transcriptions.create(
+        # ✅ Transcribe using OpenAI Whisper
+        transcript = openai.audio.transcriptions.create(
             model="whisper-1",
             file=audio_bytes
         )
 
         print("🧩 RAW Whisper Response:", transcript)
 
-        text = transcript.text.strip() if hasattr(transcript, "text") else "(no speech detected)"
+        text = transcript.text.strip() if hasattr(transcript, "text") else ""
         if not text:
-            text = "(no speech detected — check audio clarity)"
+            text = "(no speech detected — check audio clarity or missing codecs)"
 
         return {"text": text}
 
     except subprocess.CalledProcessError as e:
-        print("❌ ffmpeg error:", e)
-        return JSONResponse({"error": "Audio conversion failed (ffmpeg error)"}, status_code=500)
+        print("❌ ffmpeg conversion failed:", e)
+        return JSONResponse({"error": "Audio conversion failed (ffmpeg issue)"}, status_code=500)
     except Exception as e:
         print("❌ Whisper Error:", e)
         return JSONResponse({"error": str(e)}, status_code=500)
