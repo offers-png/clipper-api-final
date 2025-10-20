@@ -55,28 +55,36 @@ async def startup_event():
 def home():
     """Simple health check endpoint."""
     return {"status": "✅ PTSEL Clipper API is live and ready!"}
-
-
-@app.post("/clip")
-async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
+      @app.post("/clip")
+     async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
     try:
         start, end = start.strip(), end.strip()
         if not start or not end:
             return JSONResponse({"error": "Start and end times required."}, status_code=400)
 
+        # Save uploaded file
         input_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
         base, ext = os.path.splitext(file.filename)
+        ext = ext.lower()
         output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed{ext}")
 
-        # ✅ Robust large-file FFmpeg command (forces accurate seeking)
+        # ✅ Pick codec automatically based on file extension
+        if ext == ".webm":
+            vcodec = "libvpx-vp9"
+            acodec = "libopus"
+        else:
+            vcodec = "libx264"
+            acodec = "aac"
+
+        # ✅ FFmpeg command (safe for long files)
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
             "-i", input_path,
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            "-c:v", vcodec, "-preset", "ultrafast", "-c:a", acodec,
             "-y", output_path
         ]
 
@@ -90,4 +98,3 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
     except Exception as e:
         print(f"❌ Error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
