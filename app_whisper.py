@@ -32,7 +32,7 @@ async def transcribe(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # ✅ Convert to clean audio only (mono 16kHz)
+        # Convert to wav (mono 16kHz)
         wav_path = os.path.splitext(input_path)[0] + ".wav"
         subprocess.run([
             "ffmpeg", "-y", "-i", input_path,
@@ -40,17 +40,19 @@ async def transcribe(file: UploadFile = File(...)):
             "-ar", "16000", "-ac", "1", wav_path
         ], check=True)
 
-        # ✅ Real Whisper call (new SDK method)
+        # Call OpenAI Whisper
         with open(wav_path, "rb") as audio_file:
             transcript = openai.Audio.transcribe(
                 model="whisper-1",
                 file=audio_file
             )
 
-        # ✅ Extract text safely
+        # DEBUG: print the raw response
+        print("🧩 RAW Whisper Response:", transcript)
+
         text = transcript.get("text", "").strip()
         if not text:
-            text = "(no speech detected — check audio clarity)"
+            text = "(no speech detected — check audio clarity or file format)"
 
         return {"text": text}
 
