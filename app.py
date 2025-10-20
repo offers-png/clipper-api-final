@@ -1,10 +1,7 @@
+import os, subprocess, requests
 from fastapi import FastAPI, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import requests
-import os
-import subprocess
-import yt_dlp
 
 app = FastAPI()
 
@@ -38,6 +35,7 @@ def run_ffmpeg(input_path, start, end, output_path):
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+
 # ✅ YouTube or direct URL clip route
 @app.post("/clip_link")
 async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
@@ -46,56 +44,48 @@ async def clip_link(url: str = Form(...), start: str = Form(...), end: str = For
         input_path = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
         output_path = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
 
-        # --- YOUTUBE LINKS ---
+        # --- Handle YouTube links via proxy ---
         if "youtube.com" in url or "youtu.be" in url:
             try:
-                print("Attempting YouTube download via yt_dlp...")
-                ydl_opts = {
-                    "outtmpl": input_path,
-                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-                    "quiet": True,
-                    "noplaylist": True,
-                    "nocheckcertificate": True,
-                    "geo_bypass": True,
-                    "retries": 3,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                print("Fetching YouTube via proxy API...")
+                # ✅ YouTube proxy API that bypasses bot check
+                api = f"https://youapi.matsurihi.me/api/youtube?url={url}"
+                res = requests.get(api, timeout=25)
+                data = res.json()
+
+                video_url = data.get("video_url") or data.get("url")
+                if not video_url:
+                    raise ValueError("No video URL returned by proxy API")
+
+                # Download video file
+                with requests.get(video_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(input_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+
             except Exception as e:
-                # --- Retry with cookies bypass ---
-                print(f"yt_dlp failed, retrying with bypass... {e}")
-                ydl_opts["cookiefile"] = None
-                ydl_opts["source_address"] = "0.0.0.0"
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                return JSONResponse(
+                    {"error": f"Proxy YouTube fetch failed: {str(e)}"},
+                    status_code=500
+                )
 
-            # ✅ Trim
-            run_ffmpeg(input_path, start, end, output_path)
-
-            return FileResponse(
-                output_path,
-                media_type="video/mp4",
-                filename=f"trimmed_{video_id}.mp4"
-            )
-
-        # --- DIRECT VIDEO LINKS ---
+        # --- Handle direct MP4 links ---
         else:
-            filename = os.path.join(UPLOAD_DIR, "temp_video.mp4")
-            output_path = os.path.join(UPLOAD_DIR, "trimmed_output.mp4")
-
             with requests.get(url, stream=True) as r:
                 r.raise_for_status()
-                with open(filename, "wb") as f:
+                with open(input_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
 
-            run_ffmpeg(filename, start, end, output_path)
+        # --- Trim video ---
+        run_ffmpeg(input_path, start, end, output_path)
 
-            return FileResponse(
-                output_path,
-                media_type="video/mp4",
-                filename="trimmed_output.mp4"
-            )
+        return FileResponse(
+            output_path,
+            media_type="video/mp4",
+            filename=f"trimmed_{video_id}.mp4"
+        )
 
     except Exception as e:
         return JSONResponse({"error": f"Server error: {str(e)}"}, status_code=500)
