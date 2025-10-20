@@ -1,23 +1,24 @@
-import os
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from openai import OpenAI
+import os
 import tempfile
 
+app = FastAPI()
 client = OpenAI()
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
-        # Save file temporarily
+        # Save uploaded file to temporary location
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        print(f"✅ Received file: {tmp_path} ({os.path.getsize(tmp_path)/1_000_000:.2f} MB)")
+        print(f"📥 Received file: {file.filename} ({os.path.getsize(tmp_path)/1_000_000:.2f} MB)")
+        print("🎙️ Sending to Whisper for transcription...")
 
-        # Send to Whisper
-        print("🎙️ Sending file to Whisper...")
+        # Send to OpenAI Whisper
         with open(tmp_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -26,9 +27,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
             )
 
         text = transcript.strip() if transcript else "(no text found)"
-        print(f"✅ Whisper returned: {text[:100]}...")
+        print(f"✅ Whisper returned first 100 chars: {text[:100]}")
 
-        # Clean up
+        # Delete temp file
         os.remove(tmp_path)
 
         return JSONResponse({"text": text})
