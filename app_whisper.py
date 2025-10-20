@@ -1,12 +1,15 @@
-import os, shutil
-from fastapi import FastAPI, UploadFile, File
+import openai
+import os
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
 
 app = FastAPI()
 
-origins = ["https://ptsel-frontend.onrender.com", "http://localhost:5173"]
+origins = [
+    "https://ptsel-frontend.onrender.com",
+    "http://localhost:5173"
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -15,22 +18,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "/data/uploads"
+UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 @app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def clip_whisper(file: UploadFile = File(...)):
     try:
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # save uploaded file
+        input_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
 
-        with open(file_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=audio_file
+        # --- real whisper API call ---
+        with open(input_path, "rb") as audio:
+            transcript = openai.Audio.transcriptions.create(
+                model="whisper-1",
+                file=audio
             )
-        return {"text": transcript.text}
+
+        text = transcript.text if hasattr(transcript, "text") else "(no text found)"
+        return {"text": text}
+
     except Exception as e:
+        print("❌ Whisper error:", e)
         return JSONResponse({"error": str(e)}, status_code=500)
