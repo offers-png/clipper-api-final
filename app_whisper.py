@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import os
@@ -8,30 +8,44 @@ app = FastAPI()
 client = OpenAI()
 
 @app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def transcribe_audio(
+    file: UploadFile = File(None),
+    url: str = Form(None)
+):
     try:
-        # Save to a temporary file (supports large uploads)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-            tmp.write(await file.read())
-            tmp_path = tmp.name
+        # If a file is uploaded
+        if file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+                tmp.write(await file.read())
+                tmp_path = tmp.name
+            with open(tmp_path, "rb") as audio:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio,
+                    response_format="text"
+                )
+            os.remove(tmp_path)
+            return JSONResponse({"text": transcript.strip()})
 
-        print(f"📥 Received file: {file.filename} ({os.path.getsize(tmp_path)/1_000_000:.2f} MB)")
-        print("🎙️ Sending to Whisper for transcription...")
+        # If a URL is provided instead
+        elif url:
+            import requests
+            response = requests.get(url)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+                tmp.write(response.content)
+                tmp_path = tmp.name
+            with open(tmp_path, "rb") as audio:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio,
+                    response_format="text"
+                )
+            os.remove(tmp_path)
+            return JSONResponse({"text": transcript.strip()})
 
-        # Send to Whisper model
-        with open(tmp_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="text"
-            )
-
-        text = transcript.strip() if transcript else "(no text found)"
-        print(f"✅ Whisper returned first 100 chars: {text[:100]}")
-
-        os.remove(tmp_path)
-        return JSONResponse({"text": text})
+        else:
+            return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
     except Exception as e:
-        print(f"❌ Whisper error: {e}")
+        print(f"❌ Error during transcription: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
