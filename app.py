@@ -1,208 +1,93 @@
-import os, shutil, subprocess, asyncio, sys
-from datetime import datetime, timedelta
-
-from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
-from fastapi.middleware.cors import CORSMiddleware
-
-# Optional: pip install openai yt-dlp
-from openai import OpenAI
+from fastapi import FastAPI, Form
+from fastapi.responses import FileResponse, JSONResponse
+import requests
 import yt_dlp
+import os
+import subprocess
+import tempfile
 
-APP_NAME = "PTSEL Clipper"
+app = FastAPI()
+
+# --- Existing upload dir setup ---
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-app = FastAPI(title=APP_NAME)
-
-# --- CORS: frontend + local dev
-ALLOWED_ORIGINS = [
-    "https://ptsel-frontend.onrender.com",
-    "http://localhost:5173",
-]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- OpenAI (optional for /transcribe)
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
-
-# ---------- helpers ----------
-
-def log(msg: str):
-    print(msg, file=sys.stdout, flush=True)
-
-def ffmpeg_run(cmd: list[str]) -> tuple[int, str]:
-    """Run ffmpeg and return (code, stderr)."""
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return proc.returncode, proc.stderr
-
-def safe_trim(src: str, start: str, end: str, dst: str) -> tuple[bool, str]:
-    """
-    Try fast stream copy first (super fast).
-    If it fails (non-keyframe, codec mismatch), fall back to re-encode.
-    """
-    # 1) fast path
-    fast = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-ss", start, "-to", end, "-i", src,
-        "-c", "copy", "-y", dst
+# --- Helper function ---
+def run_ffmpeg(input_path, start, end, output_path):
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", start,
+        "-to", end,
+        "-i", input_path,
+        "-c", "copy",
+        output_path
     ]
-    code, err = ffmpeg_run(fast)
-    if code == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
-        return True, "copy"
-
-    # 2) safe path (re-encode)
-    slow = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-ss", start, "-to", end, "-i", src,
-        "-c:v", "libx264", "-preset", "veryfast",
-        "-c:a", "aac", "-y", dst
-    ]
-    code2, err2 = ffmpeg_run(slow)
-    if code2 == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
-        return True, "reencode"
-
-    return False, (err2 or err)
-
-def autoclean(days: int = 3):
-    now = datetime.now().timestamp()
-    removed = 0
-    for root, _, files in os.walk(UPLOAD_DIR):
-        for f in files:
-            p = os.path.join(root, f)
-            try:
-                if os.path.getmtime(p) < now - days*24*3600:
-                    os.remove(p)
-                    removed += 1
-            except Exception as e:
-                log(f"[cleanup] failed {p}: {e}")
-    if removed:
-        log(f"[cleanup] removed {removed} old files")
-
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(asyncio.to_thread(autoclean))
-    log(f"[startup] {APP_NAME} ready. Upload dir: {UPLOAD_DIR}")
-
-# ---------- tiny observability routes ----------
-
-@app.get("/")
-def home():
-    return {"status": f"{APP_NAME} backend combined and running ✅"}
-
-@app.get("/probe")
-def probe():
-    return {"ok": True, "uptime": datetime.utcnow().isoformat() + "Z"}
-
-@app.post("/echo")
-async def echo(request: Request):
-    # Helps isolate proxy/CORS issues with a tiny body
-    try:
-        body = await request.body()
-        return PlainTextResponse(f"len={len(body)} origin={request.headers.get('origin')}")
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-# ---------- main features ----------
-
-@app.post("/clip")
-async def clip_video(
-    request: Request,
-    file: UploadFile = File(...),
-    start: str = Form(...),
-    end: str = Form(...),
-):
-    try:
-        log(f"[clip] origin={request.headers.get('origin')} ua={request.headers.get('user-agent')}")
-        src = os.path.join(UPLOAD_DIR, file.filename)
-        with open(src, "wb") as buf:
-            shutil.copyfileobj(file.file, buf)
-
-        out_name = f"trimmed_{file.filename}"
-        out_path = os.path.join(UPLOAD_DIR, out_name)
-
-        ok, how = safe_trim(src, start.strip(), end.strip(), out_path)
-        if not ok:
-            return JSONResponse({"error": "FFmpeg failed to trim this file"}, status_code=500)
-
-        log(f"[clip] done via {how}: {out_name} ({os.path.getsize(out_path)} bytes)")
-        return FileResponse(out_path, filename=out_name)
-
-    except Exception as e:
-        log(f"[clip] error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 @app.post("/clip_link")
-async def clip_youtube(
-    request: Request,
-    url: str = Form(...),
-    start: str = Form(...),
-    end: str = Form(...),
-):
+async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
-        log(f"[clip_link] origin={request.headers.get('origin')} url={url}")
-        src = os.path.join(UPLOAD_DIR, "yt_source.mp4")
-        out_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
+        video_path = None
+        output_path = None
 
-        ydl_opts = {"outtmpl": src, "format": "mp4", "quiet": True, "no_warnings": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # --- STEP 1: Handle YouTube via Piped API ---
+        if "youtube.com" in url or "youtu.be" in url:
+            try:
+                video_id = url.split("v=")[-1] if "v=" in url else url.split("/")[-1]
+                api_url = f"https://pipedapi.kavin.rocks/streams/{video_id}"
+                data = requests.get(api_url, timeout=10).json()
 
-        ok, how = safe_trim(src, start.strip(), end.strip(), out_path)
-        if not ok:
-            return JSONResponse({"error": "FFmpeg failed to trim YouTube clip"}, status_code=500)
+                # Pick best quality stream (mp4)
+                stream = next(
+                    (s for s in data.get("videoStreams", []) if "mp4" in s["mimeType"]),
+                    None
+                )
+                if not stream:
+                    return JSONResponse({"error": "No valid MP4 stream found."}, status_code=400)
 
-        log(f"[clip_link] done via {how}: yt_trimmed.mp4 ({os.path.getsize(out_path)} bytes)")
-        return FileResponse(out_path, filename="yt_trimmed.mp4")
+                video_url = stream["url"]
+                temp_input = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
+                temp_output = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
 
-    except Exception as e:
-        log(f"[clip_link] error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+                # Download the stream
+                with requests.get(video_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(temp_input, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
 
-@app.post("/transcribe")
-async def transcribe_audio(
-    request: Request,
-    file: UploadFile = File(...),
-):
-    if not client:
-        return JSONResponse({"error": "OPENAI_API_KEY not set"}, status_code=500)
-    try:
-        log(f"[transcribe] origin={request.headers.get('origin')}")
-        src = os.path.join(UPLOAD_DIR, file.filename)
-        with open(src, "wb") as buf:
-            shutil.copyfileobj(file.file, buf)
+                # --- STEP 2: Trim it ---
+                run_ffmpeg(temp_input, start, end, temp_output)
 
-        with open(src, "rb") as audio_file:
-            resp = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=audio_file
+                # --- STEP 3: Return file ---
+                return FileResponse(
+                    temp_output,
+                    media_type="video/mp4",
+                    filename=f"trimmed_{video_id}.mp4"
+                )
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # --- Non-YouTube (Direct URL) ---
+        else:
+            filename = os.path.join(UPLOAD_DIR, "temp_video.mp4")
+            output_path = os.path.join(UPLOAD_DIR, "trimmed_output.mp4")
+
+            # Download direct link
+            with requests.get(url, stream=True) as r:
+                r.raise_for_status()
+                with open(filename, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+            run_ffmpeg(filename, start, end, output_path)
+
+            return FileResponse(
+                output_path,
+                media_type="video/mp4",
+                filename="trimmed_output.mp4"
             )
-        return {"text": resp.text}
+
     except Exception as e:
-        log(f"[transcribe] error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
-# ---------- uvicorn entry (Render binds $PORT) ----------
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    log(f"[boot] binding 0.0.0.0:{port}")
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        timeout_keep_alive=180,   # a little headroom
-        limit_concurrency=20,
-    )
