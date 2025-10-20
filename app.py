@@ -42,60 +42,76 @@ def run_ffmpeg(input_path, start, end, output_path):
 @app.post("/clip_link")
 async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
-        # --- STEP 1: Handle YouTube URLs via Piped API ---
+        video_id = None
+        temp_input = None
+        temp_output = None
+
+        # --- YouTube Links ---
         if "youtube.com" in url or "youtu.be" in url:
             try:
+                # ✅ Try Piped API first
                 video_id = url.split("v=")[-1] if "v=" in url else url.split("/")[-1]
                 api_url = f"https://pipedapi.kavin.rocks/streams/{video_id}"
-                data = requests.get(api_url, timeout=10).json()
+                r = requests.get(api_url, timeout=10)
+                if not r.text.strip():
+                    raise ValueError("Empty Piped API response.")
+                data = r.json()
 
-                # Pick best mp4 stream
+                # Find best MP4 stream
                 stream = next(
                     (s for s in data.get("videoStreams", []) if "mp4" in s["mimeType"]),
                     None
                 )
                 if not stream:
-                    return JSONResponse({"error": "No valid MP4 stream found."}, status_code=400)
+                    raise ValueError("No valid MP4 stream in Piped API.")
 
                 video_url = stream["url"]
                 temp_input = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
                 temp_output = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
 
-                # Download the video file
+                # Download file
                 with requests.get(video_url, stream=True) as r:
                     r.raise_for_status()
                     with open(temp_input, "wb") as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
 
-                # Trim video using ffmpeg
-                run_ffmpeg(temp_input, start, end, temp_output)
+            except Exception as piped_error:
+                # ⚠️ Fallback: use yt_dlp directly
+                print(f"Piped failed: {piped_error}. Falling back to yt_dlp...")
+                temp_input = os.path.join(UPLOAD_DIR, "yt_fallback.mp4")
+                temp_output = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
 
-                # Send back the clipped video
-                return FileResponse(
-                    temp_output,
-                    media_type="video/mp4",
-                    filename=f"trimmed_{video_id}.mp4"
-                )
+                import yt_dlp
+                ydl_opts = {
+                    "outtmpl": temp_input,
+                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+                    "quiet": True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
 
-            except Exception as e:
-                return JSONResponse({"error": f"YouTube download failed: {str(e)}"}, status_code=500)
+            # ✅ Trim video
+            run_ffmpeg(temp_input, start, end, temp_output)
 
-        # --- STEP 2: Handle direct video URLs ---
+            return FileResponse(
+                temp_output,
+                media_type="video/mp4",
+                filename=f"trimmed_{video_id or 'youtube'}.mp4"
+            )
+
+        # --- Direct video links ---
         else:
             filename = os.path.join(UPLOAD_DIR, "temp_video.mp4")
             output_path = os.path.join(UPLOAD_DIR, "trimmed_output.mp4")
 
-            # Download video file
             with requests.get(url, stream=True) as r:
                 r.raise_for_status()
                 with open(filename, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
 
-            # Trim with ffmpeg
             run_ffmpeg(filename, start, end, output_path)
-
             return FileResponse(
                 output_path,
                 media_type="video/mp4",
