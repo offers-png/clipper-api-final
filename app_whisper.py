@@ -9,7 +9,6 @@ from openai import OpenAI
 app = FastAPI()
 client = OpenAI()
 
-# ✅ CORS setup so your frontend connects fine
 origins = [
     "https://ptsel-frontend.onrender.com",
     "http://localhost:5173"
@@ -23,14 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ WHISPER endpoint (upload or URL)
 @app.post("/transcribe")
-async def transcribe_audio(
-    file: UploadFile = File(None),
-    url: str = Form(None)
-):
+async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
     try:
-        # File upload
         if file:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
                 tmp.write(await file.read())
@@ -44,7 +38,6 @@ async def transcribe_audio(
             os.remove(tmp_path)
             return JSONResponse({"text": transcript.strip()})
 
-        # URL upload
         elif url:
             response = requests.get(url)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
@@ -59,7 +52,6 @@ async def transcribe_audio(
             os.remove(tmp_path)
             return JSONResponse({"text": transcript.strip()})
 
-        # Neither provided
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
