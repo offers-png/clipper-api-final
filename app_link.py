@@ -1,4 +1,4 @@
-import os, subprocess
+import os, subprocess, requests
 from fastapi import FastAPI, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,21 @@ app.add_middleware(
 
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ✅ Define ffmpeg helper
+def run_ffmpeg(input_path, start, end, output_path):
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", start,
+        "-to", end,
+        "-i", input_path,
+        "-c", "copy",
+        output_path
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 @app.post("/clip_link")
 async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
