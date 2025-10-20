@@ -10,7 +10,7 @@ client = OpenAI()
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
-        # Save uploaded file to temporary location
+        # Save to a temporary file (supports large uploads)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
@@ -18,7 +18,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
         print(f"📥 Received file: {file.filename} ({os.path.getsize(tmp_path)/1_000_000:.2f} MB)")
         print("🎙️ Sending to Whisper for transcription...")
 
-        # Send to OpenAI Whisper
+        # Send to Whisper model
         with open(tmp_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -29,9 +29,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
         text = transcript.strip() if transcript else "(no text found)"
         print(f"✅ Whisper returned first 100 chars: {text[:100]}")
 
-        # Delete temp file
         os.remove(tmp_path)
-
         return JSONResponse({"text": text})
 
     except Exception as e:
