@@ -26,7 +26,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         tmp_path = None
         audio_path = None
 
-        # ✅ Save uploaded or downloaded file
+        # ✅ Save the uploaded or downloaded file
         if file:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
                 tmp.write(await file.read())
@@ -40,7 +40,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
-        # ✅ Convert any video to .mp3 using ffmpeg
+        # ✅ Convert to MP3 before sending to Whisper
         audio_path = tmp_path.replace(".webm", ".mp3")
         subprocess.run(
             ["ffmpeg", "-y", "-i", tmp_path, "-vn", "-acodec", "mp3", audio_path],
