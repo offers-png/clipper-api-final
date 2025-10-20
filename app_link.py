@@ -17,29 +17,94 @@ app.add_middleware(
 
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 @app.post("/clip_link")
-async def clip_youtube(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
+async def clip_link(url: str = Form(...), start: str = Form(...), end: str = Form(...)):
     try:
-        video_path = os.path.join(UPLOAD_DIR, "yt_source.mp4")
-        trimmed_path = os.path.join(UPLOAD_DIR, "yt_trimmed.mp4")
+        video_id = url.split("v=")[-1] if "v=" in url else url.split("/")[-1]
+        input_path = os.path.join(UPLOAD_DIR, f"{video_id}.mp4")
+        output_path = os.path.join(UPLOAD_DIR, f"trimmed_{video_id}.mp4")
 
-        ydl_opts = {"outtmpl": video_path, "format": "mp4"}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # --- YOUTUBE LINKS ---
+        if "youtube.com" in url or "youtu.be" in url:
+            try:
+                print("Attempting YouTube download via yt_dlp...")
+                ydl_opts = {
+                    "outtmpl": input_path,
+                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+                    "quiet": True,
+                    "noplaylist": True,
+                    "nocheckcertificate": True,
+                    "geo_bypass": True,
+                    "retries": 3,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
 
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end,
-            "-i", video_path,
-            "-c", "copy", "-y", trimmed_path
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            except Exception as e:
+                print(f"yt_dlp failed: {e}")
+                print("➡️ Switching to Piped API fallback...")
 
-        if result.returncode != 0:
-            return JSONResponse({"error": result.stderr}, status_code=500)
+                # ✅ 3 fallback APIs
+                piped_instances = [
+                    "https://pipedapi.adminforge.de",
+                    "https://pipedapi.syncpundit.com",
+                    "https://pipedapi.mha.fi"
+                ]
 
-        return FileResponse(trimmed_path, filename="yt_trimmed.mp4")
+                stream_data = None
+                for api in piped_instances:
+                    try:
+                        res = requests.get(f"{api}/streams/{video_id}", timeout=10)
+                        if res.status_code == 200:
+                            stream_data = res.json()
+                            break
+                    except Exception:
+                        continue
+
+                if not stream_data:
+                    raise ValueError("All Piped API endpoints failed.")
+
+                mp4_stream = next(
+                    (s for s in stream_data.get("videoStreams", []) if "mp4" in s["mimeType"]),
+                    None
+                )
+                if not mp4_stream:
+                    raise ValueError("No MP4 stream available from Piped API.")
+
+                video_url = mp4_stream["url"]
+                with requests.get(video_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(input_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+
+            # ✅ Trim video
+            run_ffmpeg(input_path, start, end, output_path)
+
+            return FileResponse(
+                output_path,
+                media_type="video/mp4",
+                filename=f"trimmed_{video_id}.mp4"
+            )
+
+        # --- DIRECT VIDEO LINKS ---
+        else:
+            filename = os.path.join(UPLOAD_DIR, "temp_video.mp4")
+            output_path = os.path.join(UPLOAD_DIR, "trimmed_output.mp4")
+
+            with requests.get(url, stream=True) as r:
+                r.raise_for_status()
+                with open(filename, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+            run_ffmpeg(filename, start, end, output_path)
+
+            return FileResponse(
+                output_path,
+                media_type="video/mp4",
+                filename="trimmed_output.mp4"
+            )
 
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": f"Server error: {str(e)}"}, status_code=500)
