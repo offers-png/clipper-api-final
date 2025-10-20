@@ -55,8 +55,11 @@ async def startup_event():
 def home():
     """Simple health check endpoint."""
     return {"status": "✅ PTSEL Clipper API is live and ready!"}
-      @app.post("/clip")
-     async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
+
+
+# ✅ Main clipping route
+@app.post("/clip")
+async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
     try:
         start, end = start.strip(), end.strip()
         if not start or not end:
@@ -79,12 +82,13 @@ def home():
             vcodec = "libx264"
             acodec = "aac"
 
-        # ✅ FFmpeg command (safe for long files)
+        # ✅ FFmpeg command (handles large files safely)
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
             "-i", input_path,
             "-c:v", vcodec, "-preset", "ultrafast", "-c:a", acodec,
+            "-movflags", "+faststart",
             "-y", output_path
         ]
 
