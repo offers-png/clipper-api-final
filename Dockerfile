@@ -17,3 +17,4 @@ EXPOSE 10000
 
 # ✅ Start FastAPI server
 CMD ["uvicorn", "app_whisper:app", "--host", "0.0.0.0", "--port", "10000"]
+CMD ["uvicorn", "app_trim:app", "--host", "0.0.0.0", "--port", "10000"]
