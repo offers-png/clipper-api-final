@@ -25,35 +25,31 @@ app.add_middleware(
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
     try:
+        tmp_path = None
+
         if file:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-                tmp.write(await file.read())
+                for chunk in iter(lambda: file.file.read(1024 * 1024), b""):
+                    tmp.write(chunk)
                 tmp_path = tmp.name
-            with open(tmp_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="text"
-                )
-            os.remove(tmp_path)
-            return JSONResponse({"text": transcript.strip()})
-
         elif url:
-            response = requests.get(url)
+            response = requests.get(url, stream=True)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-                tmp.write(response.content)
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    tmp.write(chunk)
                 tmp_path = tmp.name
-            with open(tmp_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="text"
-                )
-            os.remove(tmp_path)
-            return JSONResponse({"text": transcript.strip()})
-
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
+
+        with open(tmp_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+
+        os.remove(tmp_path)
+        return JSONResponse({"text": transcript.strip()})
 
     except Exception as e:
         print(f"❌ Error during transcription: {e}")
