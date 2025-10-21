@@ -127,17 +127,25 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
-        # ✅ Convert video/audio → .mp3
-        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
-        convert_cmd = [
-            "ffmpeg", "-y", "-i", tmp_path, "-vn",
-            "-acodec", "libmp3lame", "-ar", "44100", "-ac", "2", audio_path
-        ]
-        result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # ✅ Convert any input (webm, mp4, mov, mkv, etc.) → mp3 safely
+audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+convert_cmd = [
+    "ffmpeg", "-y",
+    "-i", tmp_path,
+    "-vn",
+    "-acodec", "libmp3lame",
+    "-ar", "44100",
+    "-ac", "2",
+    "-b:a", "192k",   # force stable bitrate
+    "-f", "mp3",
+    audio_path
+]
+result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        if result.returncode != 0:
-            print("❌ FFmpeg stderr:", result.stderr.decode())
-            raise Exception("FFmpeg failed to create audio file")
+if result.returncode != 0 or not os.path.exists(audio_path):
+    print("❌ FFmpeg stderr:", result.stderr)
+    raise Exception("FFmpeg failed to create audio file")
+
 
         # ✅ Send audio to Whisper
         with open(audio_path, "rb") as audio_file:
