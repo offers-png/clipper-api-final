@@ -74,30 +74,24 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         ext = ext.lower()
         output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed{ext}")
 
-        # ✅ Pick codec automatically based on file extension
-        if ext == ".webm":
-            vcodec = "libvpx-vp9"
-            acodec = "libopus"
-        else:
-            vcodec = "libx264"
-            acodec = "aac"
-
-        # ✅ FFmpeg command (handles large files safely)
+        # ✅ Use stream copy (super fast, no re-encoding)
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
             "-i", input_path,
-            "-c:v", vcodec, "-preset", "ultrafast", "-c:a", acodec,
-            "-movflags", "+faststart",
+            "-c", "copy",
             "-y", output_path
         ]
 
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
 
         if result.returncode != 0 or not os.path.exists(output_path):
             return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
 
         return FileResponse(output_path, filename=f"{base}_trimmed{ext}", media_type="video/mp4")
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "⏱️ FFmpeg timed out while processing large video."}, status_code=504)
 
     except Exception as e:
         print(f"❌ Error: {e}")
