@@ -57,7 +57,6 @@ async def startup_event():
 def home():
     return {"status": "✅ PTSEL Clipper + Whisper API is live and ready!"}
 
-
 # ============================================================
 # 🎬 CLIP ENDPOINT
 # ============================================================
@@ -77,16 +76,17 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         ext = ext.lower()
         output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed{ext}")
 
-        # ✅ Use stream copy (super fast, no re-encoding)
+        # ✅ Use re-encode for full compatibility (handles all formats)
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
             "-i", input_path,
-            "-c", "copy",
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", "-b:a", "192k",
             "-y", output_path
         ]
 
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
 
         if result.returncode != 0 or not os.path.exists(output_path):
             return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
@@ -99,7 +99,6 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
     except Exception as e:
         print(f"❌ Error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
 
 # ============================================================
 # 🎙️ WHISPER ENDPOINT
@@ -128,24 +127,23 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
         # ✅ Convert any input (webm, mp4, mov, mkv, etc.) → mp3 safely
-audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
-convert_cmd = [
-    "ffmpeg", "-y",
-    "-i", tmp_path,
-    "-vn",
-    "-acodec", "libmp3lame",
-    "-ar", "44100",
-    "-ac", "2",
-    "-b:a", "192k",   # force stable bitrate
-    "-f", "mp3",
-    audio_path
-]
-result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+        convert_cmd = [
+            "ffmpeg", "-y",
+            "-i", tmp_path,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-ar", "44100",
+            "-ac", "2",
+            "-b:a", "192k",   # force stable bitrate
+            "-f", "mp3",
+            audio_path
+        ]
+        result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-if result.returncode != 0 or not os.path.exists(audio_path):
-    print("❌ FFmpeg stderr:", result.stderr)
-    raise Exception("FFmpeg failed to create audio file")
-
+        if result.returncode != 0 or not os.path.exists(audio_path):
+            print("❌ FFmpeg stderr:", result.stderr)
+            raise Exception("FFmpeg failed to create audio file")
 
         # ✅ Send audio to Whisper
         with open(audio_path, "rb") as audio_file:
