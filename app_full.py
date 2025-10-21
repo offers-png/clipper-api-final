@@ -32,6 +32,7 @@ app.add_middleware(
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+
 # ✅ Periodic cleanup for files older than 3 days
 def auto_cleanup():
     now = datetime.now()
@@ -48,14 +49,17 @@ def auto_cleanup():
     if deleted:
         print(f"🧹 Auto-cleanup complete: {deleted} old files removed.")
 
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(asyncio.to_thread(auto_cleanup))
+
 
 # ✅ Health check route
 @app.get("/")
 def home():
     return {"status": "✅ PTSEL Clipper + Whisper API is live and ready!"}
+
 
 # ============================================================
 # 🎬 CLIP ENDPOINT
@@ -76,7 +80,7 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         ext = ext.lower()
         output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed{ext}")
 
-        # ✅ Use re-encode for full compatibility (handles all formats)
+        # ✅ Use re-encode for universal compatibility
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
@@ -99,6 +103,7 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
     except Exception as e:
         print(f"❌ Error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 # ============================================================
 # 🎙️ WHISPER ENDPOINT
@@ -123,29 +128,29 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     tmp.write(chunk)
                 tmp_path = tmp.name
+
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
-         
-           # ✅ Convert any input (webm, mp4, mov, mkv, etc.) → mp3 safely
-           audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
-            convert_cmd = [
-           "ffmpeg", "-y",
-           "-i", tmp_path,
-           "-vn",
-           "-ar", "44100",
-           "-ac", "2",
-           "-b:a", "192k",
-           "-f", "mp3",
-             audio_path
-        ]  
 
+        # ✅ Convert input to mp3 safely (no codec conflicts)
+        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+        convert_cmd = [
+            "ffmpeg", "-y",
+            "-i", tmp_path,
+            "-vn",
+            "-ar", "44100",
+            "-ac", "2",
+            "-b:a", "192k",
+            "-f", "mp3",
+            audio_path
+        ]
         result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0 or not os.path.exists(audio_path):
             print("❌ FFmpeg stderr:", result.stderr)
             raise Exception("FFmpeg failed to create audio file")
 
-        # ✅ Send audio to Whisper
+        # ✅ Send to Whisper
         with open(audio_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -153,7 +158,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 response_format="text"
             )
 
-        # ✅ Clean up temporary files
+        # ✅ Clean up
         for path in [tmp_path, audio_path]:
             try:
                 if path and os.path.exists(path):
@@ -161,7 +166,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
             except Exception:
                 pass
 
-        # ✅ Return transcript text
+        # ✅ Return transcript
         text_output = transcript.strip() if transcript else ""
         if not text_output:
             return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"})
