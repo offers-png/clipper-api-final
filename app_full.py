@@ -32,7 +32,6 @@ app.add_middleware(
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-
 # ✅ Periodic cleanup for files older than 3 days
 def auto_cleanup():
     now = datetime.now()
@@ -49,17 +48,14 @@ def auto_cleanup():
     if deleted:
         print(f"🧹 Auto-cleanup complete: {deleted} old files removed.")
 
-
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(asyncio.to_thread(auto_cleanup))
-
 
 # ✅ Health check route
 @app.get("/")
 def home():
     return {"status": "✅ PTSEL Clipper + Whisper API is live and ready!"}
-
 
 # ============================================================
 # 🎬 CLIP ENDPOINT
@@ -76,11 +72,10 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        base, ext = os.path.splitext(file.filename)
-        ext = ext.lower()
-        output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed{ext}")
+        base, _ = os.path.splitext(file.filename)
+        output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed.mp4")
 
-        # ✅ Use re-encode for universal compatibility
+        # ✅ Always output MP4 (no WebM codec restrictions)
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", start, "-to", end,
@@ -93,9 +88,10 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
 
         if result.returncode != 0 or not os.path.exists(output_path):
+            print("❌ FFmpeg stderr:", result.stderr)
             return JSONResponse({"error": f"FFmpeg failed: {result.stderr}"}, status_code=500)
 
-        return FileResponse(output_path, filename=f"{base}_trimmed{ext}", media_type="video/mp4")
+        return FileResponse(output_path, filename=f"{base}_trimmed.mp4", media_type="video/mp4")
 
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "⏱️ FFmpeg timed out while processing large video."}, status_code=504)
@@ -104,7 +100,6 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         print(f"❌ Error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
-
 # ============================================================
 # 🎙️ WHISPER ENDPOINT
 # ============================================================
@@ -112,7 +107,8 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
 async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
     try:
         tmp_path = None
-        audio_path = None
+        audio_wav = None
+        audio_mp3 = None
         os.makedirs("/tmp", exist_ok=True)
 
         # ✅ Save uploaded file
@@ -128,30 +124,39 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     tmp.write(chunk)
                 tmp_path = tmp.name
-
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
-        # ✅ Convert input to mp3 safely (no codec conflicts)
-        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
-        convert_cmd = [
+        # ✅ Step 1: Decode to WAV (handles WebM/Opus)
+        audio_wav = tmp_path.rsplit(".", 1)[0] + ".wav"
+        decode_cmd = [
             "ffmpeg", "-y",
             "-i", tmp_path,
             "-vn",
+            "-acodec", "pcm_s16le",
             "-ar", "44100",
             "-ac", "2",
-            "-b:a", "192k",
-            "-f", "mp3",
-            audio_path
+            audio_wav
         ]
-        result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        if result.returncode != 0 or not os.path.exists(audio_path):
+        # ✅ Step 2: Encode to MP3 (for Whisper)
+        audio_mp3 = audio_wav.rsplit(".", 1)[0] + ".mp3"
+        encode_cmd = [
+            "ffmpeg", "-y",
+            "-i", audio_wav,
+            "-codec:a", "libmp3lame",
+            "-b:a", "192k",
+            audio_mp3
+        ]
+        result = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if result.returncode != 0 or not os.path.exists(audio_mp3):
             print("❌ FFmpeg stderr:", result.stderr)
             raise Exception("FFmpeg failed to create audio file")
 
         # ✅ Send to Whisper
-        with open(audio_path, "rb") as audio_file:
+        with open(audio_mp3, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
@@ -159,7 +164,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
             )
 
         # ✅ Clean up
-        for path in [tmp_path, audio_path]:
+        for path in [tmp_path, audio_wav, audio_mp3]:
             try:
                 if path and os.path.exists(path):
                     os.remove(path)
