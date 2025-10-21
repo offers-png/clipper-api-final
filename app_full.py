@@ -125,20 +125,20 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 tmp_path = tmp.name
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
+         
+           # ✅ Convert any input (webm, mp4, mov, mkv, etc.) → mp3 safely
+           audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+            convert_cmd = [
+           "ffmpeg", "-y",
+           "-i", tmp_path,
+           "-vn",
+           "-ar", "44100",
+           "-ac", "2",
+           "-b:a", "192k",
+           "-f", "mp3",
+             audio_path
+        ]  
 
-        # ✅ Convert any input (webm, mp4, mov, mkv, etc.) → mp3 safely
-        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
-        convert_cmd = [
-            "ffmpeg", "-y",
-            "-i", tmp_path,
-            "-vn",
-            "-acodec", "libmp3lame",
-            "-ar", "44100",
-            "-ac", "2",
-            "-b:a", "192k",   # force stable bitrate
-            "-f", "mp3",
-            audio_path
-        ]
         result = subprocess.run(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0 or not os.path.exists(audio_path):
