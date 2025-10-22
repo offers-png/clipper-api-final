@@ -17,6 +17,7 @@ client = OpenAI()
 # ✅ Allow frontend connections (both services + localhost)
 origins = [
     "https://ptsel-frontend.onrender.com",
+    "https://clipper-frontend.onrender.com",   # <— your live frontend
     "https://clipper-api-final-1.onrender.com",
     "http://localhost:5173"
 ]
@@ -52,7 +53,16 @@ def auto_cleanup():
 async def startup_event():
     asyncio.create_task(asyncio.to_thread(auto_cleanup))
 
-# ✅ Health check route
+# ============================================================
+# ✅ HEALTH CHECK (for frontend connection)
+# ============================================================
+@app.get("/api/health")
+def health():
+    return {"ok": True, "message": "Backend is alive and ready"}
+
+# ============================================================
+# ✅ ROOT ROUTE
+# ============================================================
 @app.get("/")
 def home():
     return {"status": "✅ PTSEL Clipper + Whisper API is live and ready!"}
