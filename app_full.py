@@ -153,22 +153,64 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
                 tmp.write(await file.read())
                 tmp_path = tmp.name
-        # ✅ OR download from URL
-elif url:
-    response = requests.get(url, stream=True, timeout=60)
-    tmp_webm = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.webm")
+      # ============================================================
+# 🎙️ WHISPER ENDPOINT (UPLOAD OR URL)
+# ============================================================
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
+    try:
+        tmp_path = None
+        audio_wav = None
+        audio_mp3 = None
+        os.makedirs("/tmp", exist_ok=True)
 
-    with open(tmp_webm, "wb") as tmp:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            tmp.write(chunk)
-    tmp_path = tmp_webm
+        # ✅ Save uploaded file
+        if file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
+                tmp.write(await file.read())
+                tmp_path = tmp.name
+
+        # ✅ OR download from URL (fixed safe version)
+        elif url:
+            response = requests.get(url, stream=True, timeout=60)
+            tmp_webm = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.webm")
+            with open(tmp_webm, "wb") as tmp:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    tmp.write(chunk)
+            tmp_path = tmp_webm
 
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
-        audio_mp3 = tmp_path.rsplit(".", 1)[0] + ".mp3"
-        subprocess.run(["ffmpeg", "-y", "-i", tmp_path, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", audio_mp3])
+        # ✅ Step 1: Decode to WAV
+        audio_wav = tmp_path.rsplit(".", 1)[0] + ".wav"
+        decode_cmd = [
+            "ffmpeg", "-y",
+            "-i", tmp_path,
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            audio_wav
+        ]
+        subprocess.run(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
+        # ✅ Step 2: Encode to MP3 (for Whisper)
+        audio_mp3 = audio_wav.rsplit(".", 1)[0] + ".mp3"
+        encode_cmd = [
+            "ffmpeg", "-y",
+            "-i", audio_wav,
+            "-codec:a", "libmp3lame",
+            "-b:a", "192k",
+            audio_mp3
+        ]
+        result = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if result.returncode != 0 or not os.path.exists(audio_mp3):
+            print("❌ FFmpeg stderr:", result.stderr)
+            raise Exception("FFmpeg failed to create audio file")
+
+        # ✅ Send to Whisper
         with open(audio_mp3, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -176,11 +218,22 @@ elif url:
                 response_format="text"
             )
 
-        os.remove(tmp_path)
-        os.remove(audio_mp3)
+        # ✅ Clean up
+        for path in [tmp_path, audio_wav, audio_mp3]:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
 
-        return {"text": transcript.strip()}
+        # ✅ Return transcript
+        text_output = transcript.strip() if transcript else ""
+        if not text_output:
+            return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"})
+
+        return JSONResponse({"text": text_output})
 
     except Exception as e:
         print(f"❌ Error during transcription: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+)
