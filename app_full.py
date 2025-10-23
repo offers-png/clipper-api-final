@@ -141,19 +141,6 @@ async def clip_multi(file: UploadFile = File(...), sections: str = Form(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ============================================================
-# 🎙️ WHISPER TRANSCRIBE
-# ============================================================
-@app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
-    try:
-        tmp_path = None
-        os.makedirs("/tmp", exist_ok=True)
-
-        if file:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
-                tmp.write(await file.read())
-                tmp_path = tmp.name
-      # ============================================================
 # 🎙️ WHISPER ENDPOINT (UPLOAD OR URL)
 # ============================================================
 @app.post("/transcribe")
@@ -236,4 +223,3 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
     except Exception as e:
         print(f"❌ Error during transcription: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-)
