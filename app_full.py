@@ -16,7 +16,7 @@ from openai import OpenAI
 app = FastAPI()
 client = OpenAI()
 
-# ✅ Allow frontend connections (both services + localhost)
+# ✅ Allow frontend connections
 origins = [
     "https://ptsel-frontend.onrender.com",
     "https://clipper-frontend.onrender.com",
@@ -157,15 +157,15 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 tmp.write(await file.read())
                 tmp_path = tmp.name
 
-        # ✅ OR download from URL (fixed safe version)
-       elif url:
-    response = requests.get(url, stream=True, timeout=60)
-    ext = ".mp4" if ".mp4" in url.lower() else ".mp3"
-    tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}{ext}")
-    with open(tmp_download, "wb") as tmp:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            tmp.write(chunk)
-    tmp_path = tmp_download
+        # ✅ OR download from URL (safe and fixed)
+        elif url:
+            response = requests.get(url, stream=True, timeout=60)
+            ext = ".mp4" if ".mp4" in url.lower() else ".mp3"
+            tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}{ext}")
+            with open(tmp_download, "wb") as tmp:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    tmp.write(chunk)
+            tmp_path = tmp_download
 
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
@@ -183,44 +183,7 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         ]
         subprocess.run(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        # ✅ Step 2: Encode to MP3 (for Whisper)
+        # ✅ Step 2: Encode to MP3
         audio_mp3 = audio_wav.rsplit(".", 1)[0] + ".mp3"
         encode_cmd = [
-            "ffmpeg", "-y",
-            "-i", audio_wav,
-            "-codec:a", "libmp3lame",
-            "-b:a", "192k",
-            audio_mp3
-        ]
-        result = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        if result.returncode != 0 or not os.path.exists(audio_mp3):
-            print("❌ FFmpeg stderr:", result.stderr)
-            raise Exception("FFmpeg failed to create audio file")
-
-        # ✅ Send to Whisper
-        with open(audio_mp3, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="text"
-            )
-
-        # ✅ Clean up
-        for path in [tmp_path, audio_wav, audio_mp3]:
-            try:
-                if path and os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
-
-        # ✅ Return transcript
-        text_output = transcript.strip() if transcript else ""
-        if not text_output:
-            return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"})
-
-        return JSONResponse({"text": text_output})
-
-    except Exception as e:
-        print(f"❌ Error during transcription: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+            "ffmpeg", "-y
