@@ -31,11 +31,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Persistent upload directory (Render supports /data)
+# ✅ Upload directory (Render persistent volume)
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ✅ Cleanup for files older than 3 days
+# ✅ Cleanup for old files
 def auto_cleanup():
     now = datetime.now()
     deleted = 0
@@ -67,7 +67,7 @@ def home():
     return {"status": "✅ PTSEL Clipper + Whisper API is live and ready!"}
 
 # ============================================================
-# 🎬 SINGLE CLIP ENDPOINT
+# 🎬 SINGLE CLIP
 # ============================================================
 @app.post("/clip")
 async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: str = Form(...)):
@@ -106,7 +106,7 @@ async def clip_video(file: UploadFile = File(...), start: str = Form(...), end: 
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ============================================================
-# 🎬 MULTI-CLIP ENDPOINT (5 sections, zipped)
+# 🎬 MULTI CLIP
 # ============================================================
 @app.post("/clip_multi")
 async def clip_multi(file: UploadFile = File(...), sections: str = Form(...)):
@@ -141,7 +141,7 @@ async def clip_multi(file: UploadFile = File(...), sections: str = Form(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ============================================================
-# 🎙️ WHISPER ENDPOINT (UPLOAD OR URL)
+# 🎙️ WHISPER TRANSCRIBE (UPLOAD OR URL)
 # ============================================================
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None)):
@@ -151,15 +151,16 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         audio_mp3 = None
         os.makedirs("/tmp", exist_ok=True)
 
-        # ✅ Save uploaded file
+        # ✅ Local upload
         if file:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
                 tmp.write(await file.read())
                 tmp_path = tmp.name
 
-        # ✅ OR download from URL (safe and fixed)
+        # ✅ OR download from URL
         elif url:
             response = requests.get(url, stream=True, timeout=60)
+            # Choose file extension fallback
             ext = ".mp4" if ".mp4" in url.lower() else ".mp3"
             tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}{ext}")
             with open(tmp_download, "wb") as tmp:
@@ -183,7 +184,44 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
         ]
         subprocess.run(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        # ✅ Step 2: Encode to MP3
+        # ✅ Step 2: Encode to MP3 (for Whisper)
         audio_mp3 = audio_wav.rsplit(".", 1)[0] + ".mp3"
         encode_cmd = [
-            "ffmpeg", "-y
+            "ffmpeg", "-y",
+            "-i", audio_wav,
+            "-codec:a", "libmp3lame",
+            "-b:a", "192k",
+            audio_mp3
+        ]
+        result = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if result.returncode != 0 or not os.path.exists(audio_mp3):
+            print("❌ FFmpeg stderr:", result.stderr)
+            raise Exception("FFmpeg failed to create audio file")
+
+        # ✅ Whisper transcription
+        with open(audio_mp3, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+
+        # ✅ Clean up
+        for path in [tmp_path, audio_wav, audio_mp3]:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+        # ✅ Return transcript
+        text_output = transcript.strip() if transcript else ""
+        if not text_output:
+            return JSONResponse({"text": "(no text found — maybe silent or unreadable audio)"})
+
+        return JSONResponse({"text": text_output})
+
+    except Exception as e:
+        print(f"❌ Error during transcription: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
