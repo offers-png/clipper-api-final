@@ -153,12 +153,16 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
                 tmp.write(await file.read())
                 tmp_path = tmp.name
-        elif url:
-            response = requests.get(url, stream=True, timeout=60)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm", dir="/tmp") as tmp:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    tmp.write(chunk)
-                tmp_path = tmp.name
+        # ✅ OR download from URL
+elif url:
+    response = requests.get(url, stream=True, timeout=60)
+    tmp_webm = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.webm")
+
+    with open(tmp_webm, "wb") as tmp:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            tmp.write(chunk)
+    tmp_path = tmp_webm
+
         else:
             return JSONResponse({"error": "No file or URL provided."}, status_code=400)
 
