@@ -157,24 +157,33 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 tmp.write(await file.read())
                 tmp_path = tmp.name
 
-                # ✅ OR download from URLelif url:
-    try:
-        # ✅ Use yt-dlp to handle TikTok, YouTube, etc.
-        tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.mp4")
-        subprocess.run(
-            [
-                "yt-dlp",
-                "-f", "mp4",
-                "-o", tmp_download,
-                url
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120
-        )
+                # ✅ OR download from URL        
+        elif url:
+            try:
+                # ✅ Use yt-dlp to download from TikTok, YouTube, Instagram, etc.
+                tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.mp4")
+                subprocess.run(
+                    [
+                        "yt-dlp",
+                        "-f", "mp4",
+                        "-o", tmp_download,
+                        url
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=120
+                )
 
-        if not os.path.exists(tmp_download) or os.path.getsize(tmp_download) == 0:
-            return JSONResponse({"error": "Failed to download video using yt-dlp"}, status_code=400)
+                # ✅ Check that file exists
+                if not os.path.exists(tmp_download) or os.path.getsize(tmp_download) == 0:
+                    return JSONResponse({"error": "Failed to download video using yt-dlp"}, status_code=400)
+
+                tmp_path = tmp_download
+                print(f"✅ Downloaded successfully via yt-dlp: {tmp_path}")
+
+            except Exception as e:
+                print("❌ yt-dlp error:", e)
+                return JSONResponse({"error": f\"yt-dlp failed: {e}\"}, status_code=500)
 
         tmp_path = tmp_download
         print(f"✅ Downloaded successfully via yt-dlp: {tmp_path}")
