@@ -157,34 +157,30 @@ async def transcribe_audio(file: UploadFile = File(None), url: str = Form(None))
                 tmp.write(await file.read())
                 tmp_path = tmp.name
 
-                # ✅ OR download from URL
-        elif url:
-            # Robust remote download (ensures file saved fully before FFmpeg runs)
-            response = requests.get(url, stream=True, timeout=60)
-            if response.status_code != 200:
-                return JSONResponse({"error": f"Failed to download file: {response.status_code}"}, status_code=400)
+                # ✅ OR download from URLelif url:
+    try:
+        # ✅ Use yt-dlp to handle TikTok, YouTube, etc.
+        tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.mp4")
+        subprocess.run(
+            [
+                "yt-dlp",
+                "-f", "mp4",
+                "-o", tmp_download,
+                url
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120
+        )
 
-            # Auto detect extension safely
-            if ".mp4" in url.lower():
-                ext = ".mp4"
-            elif ".mp3" in url.lower():
-                ext = ".mp3"
-            else:
-                ext = ".webm"
+        if not os.path.exists(tmp_download) or os.path.getsize(tmp_download) == 0:
+            return JSONResponse({"error": "Failed to download video using yt-dlp"}, status_code=400)
 
-            tmp_download = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}{ext}")
-            with open(tmp_download, "wb") as tmp:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp.write(chunk)
-
-            if not os.path.exists(tmp_download) or os.path.getsize(tmp_download) == 0:
-                return JSONResponse({"error": "Downloaded file is empty or missing."}, status_code=400)
-
-            tmp_path = tmp_download
-            print(f"✅ File downloaded successfully: {tmp_path}")
-
-        else:
-            return JSONResponse({"error": "No file or URL provided."}, status_code=400)
+        tmp_path = tmp_download
+        print(f"✅ Downloaded successfully via yt-dlp: {tmp_path}")
+    except Exception as e:
+        print("❌ yt-dlp error:", e)
+        return JSONResponse({"error": f"yt-dlp failed: {e}"}, status_code=500)
 
         # ✅ Step 1: Decode to WAV
         audio_wav = tmp_path.rsplit(".", 1)[0] + ".wav"
