@@ -11,6 +11,8 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+from supabase import create_client, Client
+import os
 
 # ============================================================
 # 🔧 FastAPI & OpenAI Setup
