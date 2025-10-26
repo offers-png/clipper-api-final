@@ -6,4 +6,4 @@ ffmpeg-python==0.2.0
 openai>=2.6.0
 aiofiles==23.2.1
 requests==2.32.3
-
+supabase==2.4.3
