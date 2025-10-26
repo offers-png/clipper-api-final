@@ -20,6 +20,13 @@ import os
 app = FastAPI()
 client = OpenAI()  # Requires OPENAI_API_KEY in Render
 
+# ============================================================
+# 🧩 Supabase Connection
+# ============================================================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 origins = [
     "https://ptsel-frontend.onrender.com",
     "https://clipper-frontend.onrender.com",
