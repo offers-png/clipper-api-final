@@ -237,7 +237,7 @@ async def transcribe_audio(
                 file=audio_file,
                 response_format="text"
             )
-
+        return JSONResponse({"text": text_output})
         text_output = transcript.strip() if isinstance(transcript, str) else str(transcript)
         if not text_output:
             text_output = "(no text found — maybe silent or unreadable audio)"
