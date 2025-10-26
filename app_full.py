@@ -169,8 +169,7 @@ async def clip_multi(file: UploadFile = File(...), sections: str = Form(...)):
     except Exception as e:
         print(f"❌ /clip_multi error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
-# ============================================================
+        # ============================================================
 # 🎙️ TRANSCRIBE (upload or URL)
 # ============================================================
 @app.post("/transcribe")
@@ -237,10 +236,21 @@ async def transcribe_audio(
                 file=audio_file,
                 response_format="text"
             )
-        return JSONResponse({"text": text_output})
+
         text_output = transcript.strip() if isinstance(transcript, str) else str(transcript)
         if not text_output:
             text_output = "(no text found — maybe silent or unreadable audio)"
+
+        # ---------- Save transcript to Supabase ----------
+        try:
+            supabase.table("transcriptions").insert({
+                "user_email": "test@clipper.com",
+                "text": text_output,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+            print("✅ Transcript saved to Supabase")
+        except Exception as e:
+            print("⚠️ Supabase insert error:", e)
 
         return JSONResponse({"text": text_output})
 
