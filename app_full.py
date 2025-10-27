@@ -145,6 +145,27 @@ async def clip_multi(file: UploadFile = File(...), sections: str = Form(...)):
                 end = sec.get("end", "").strip()
                 if not start or not end:
                     return JSONResponse({"error": f"Missing start/end in section {idx}"}, status_code=400)
+            @app.post("/clip")
+async def clip_video(
+    file: UploadFile = File(...),
+    start: str = Form(...),
+    end: str = Form(...),
+    watermark: str = Form(None)   # <-- add
+):
+    # ...
+    draw = []
+    if watermark and watermark != "0":
+        draw = [
+          "-vf",
+          "drawtext=text='@ClippedBySal':x=w-tw-20:y=h-th-20:fontcolor=white:fontsize=24:box=1:boxcolor=black@0.4:boxborderw=8"
+        ]
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", start, "-to", end, "-i", input_path,
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:a", "aac", "-b:a", "192k", "-y"
+    ] + draw + [output_path]
 
                 out_name = f"clip_{idx}_{os.path.basename(file.filename)}.mp4"
                 out_path = os.path.join(UPLOAD_DIR, out_name)
