@@ -69,123 +69,119 @@ def root():
 # ============================================================
 # 🎬 SINGLE CLIP + optional watermark
 # ============================================================
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import FileResponse, JSONResponse
+import os, shutil, subprocess, json
+from zipfile import ZipFile
+
 @app.post("/clip")
 async def clip_video(
     file: UploadFile = File(...),
     start: str = Form(...),
     end: str = Form(...),
-    watermark: str = Form("0"),
-    user_email: str = Form("guest@clipper.com")
+    watermark: str = Form(""),
+    fast: str = Form("1")   # "1" = try stream copy for speed
 ):
     try:
         start, end = start.strip(), end.strip()
+        if not start or not end:
+            return JSONResponse({"error":"Start and end required."}, 400)
+
         input_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
         base, _ = os.path.splitext(file.filename)
-        output_path = os.path.join(UPLOAD_DIR, f"{base}_trimmed.mp4")
+        output_path = os.path.join(UPLOAD_DIR, f"{base}_{start.replace(':','-')}-{end.replace(':','-')}.mp4")
 
-        draw = []
-        if watermark != "0":
-            draw = [
-                "-vf",
-                "drawtext=text='@ClippedBySal':x=w-tw-20:y=h-th-20:"
-                "fontcolor=white:fontsize=24:box=1:boxcolor=black@0.4:boxborderw=8"
+        vf = []
+        # Watermark (bottom-right)
+        if watermark:
+            draw = (
+              "drawtext=text='{t}':x=w-tw-20:y=h-th-20:"
+              "fontcolor=white:fontsize=28:"
+              "box=1:boxcolor=black@0.45:boxborderw=10"
+            ).format(t=watermark.replace("'", r"\'"))
+            vf = ["-vf", draw]
+
+        # Fast path: stream copy video (if segment is simple & codec compatible)
+        if fast == "1" and not vf:
+            cmd = [
+              "ffmpeg","-hide_banner","-loglevel","error",
+              "-ss", start, "-to", end, "-i", input_path,
+              "-c:v","copy","-c:a","aac","-b:a","192k","-y", output_path
             ]
+        else:
+            cmd = [
+              "ffmpeg","-hide_banner","-loglevel","error",
+              "-ss", start, "-to", end, "-i", input_path,
+              "-c:v","libx264","-preset","veryfast","-c:a","aac","-b:a","192k","-y"
+            ] + vf + [output_path]
 
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end, "-i", input_path,
-            "-c:v", "libx264", "-preset", "ultrafast",
-            "-c:a", "aac", "-b:a", "192k", "-y"
-        ] + draw + [output_path]
-
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
         if result.returncode != 0 or not os.path.exists(output_path):
-            raise Exception(f"FFmpeg failed: {result.stderr}")
+            return JSONResponse({"error":f"FFmpeg failed: {result.stderr}"}, 500)
 
-        # 🧠 Save record in Supabase
-        supabase.table("clips").insert({
-            "user_email": user_email,
-            "filename": f"{base}_trimmed.mp4",
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-
-        return FileResponse(output_path, filename=f"{base}_trimmed.mp4", media_type="video/mp4")
-
+        return FileResponse(output_path, filename=os.path.basename(output_path), media_type="video/mp4")
     except subprocess.TimeoutExpired:
-        return JSONResponse({"error": "⏱️ Clipping timed out."}, status_code=504)
+        return JSONResponse({"error":"FFmpeg timed out."}, 504)
     except Exception as e:
-        print(f"❌ /clip error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-# ============================================================
-# 🎬 MULTI-CLIP (ZIP)
-# ============================================================
+        return JSONResponse({"error":str(e)}, 500)
+
 @app.post("/clip_multi")
 async def clip_multi(
     file: UploadFile = File(...),
     sections: str = Form(...),
-    watermark: str = Form("0"),
-    user_email: str = Form("guest@clipper.com")
+    watermark: str = Form(""),
+    fast: str = Form("1")
 ):
     try:
         data = json.loads(sections)
-        if not isinstance(data, list) or len(data) == 0:
-            return JSONResponse({"error": "sections must be a JSON array"}, status_code=400)
+        if not isinstance(data, list) or not data:
+            return JSONResponse({"error":"sections must be a JSON array"}, 400)
 
-        # Save input
         input_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        zip_path = os.path.join(UPLOAD_DIR, f"clips_bundle_{datetime.now().timestamp()}.zip")
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
+        zip_path = os.path.join(UPLOAD_DIR, "clips_bundle.zip")
+        if os.path.exists(zip_path): os.remove(zip_path)
 
-        # Start clipping
         with ZipFile(zip_path, "w") as zipf:
             for idx, sec in enumerate(data, start=1):
-                start, end = sec.get("start"), sec.get("end")
+                start = str(sec.get("start","")).strip()
+                end   = str(sec.get("end","")).strip()
                 if not start or not end:
-                    continue
+                    return JSONResponse({"error":f"Missing start/end in section {idx}"}, 400)
 
                 out_name = f"clip_{idx}.mp4"
                 out_path = os.path.join(UPLOAD_DIR, out_name)
 
-                draw = []
-                if watermark != "0":
-                    draw = [
-                        "-vf",
-                        "drawtext=text='@ClippedBySal':x=w-tw-20:y=h-th-20:"
-                        "fontcolor=white:fontsize=24:box=1:boxcolor=black@0.4:boxborderw=8"
-                    ]
+                vf = []
+                if watermark:
+                    draw = (
+                      "drawtext=text='{t}':x=w-tw-20:y=h-th-20:"
+                      "fontcolor=white:fontsize=28:box=1:boxcolor=black@0.45:boxborderw=10"
+                    ).format(t=watermark.replace("'", r"\'"))
+                    vf = ["-vf", draw]
 
-                cmd = [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-ss", start, "-to", end, "-i", input_path,
-                    "-c:v", "libx264", "-preset", "ultrafast",
-                    "-c:a", "aac", "-b:a", "192k", "-y"
-                ] + draw + [out_path]
+                if fast == "1" and not vf:
+                    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-ss",start,"-to",end,"-i",input_path,
+                           "-c:v","copy","-c:a","aac","-b:a","192k","-y", out_path]
+                else:
+                    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-ss",start,"-to",end,"-i",input_path,
+                           "-c:v","libx264","-preset","veryfast","-c:a","aac","-b:a","192k","-y"] + vf + [out_path]
 
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
-                if result.returncode != 0:
-                    print("❌ FFmpeg section error:", result.stderr)
-                    return JSONResponse({"error": f"FFmpeg failed on section {idx}"}, status_code=500)
+                r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if r.returncode != 0 or not os.path.exists(out_path):
+                    return JSONResponse({"error":f"FFmpeg failed on section {idx}: {r.stderr}"}, 500)
 
                 zipf.write(out_path, arcname=out_name)
 
-        supabase.table("clips").insert({
-            "user_email": user_email,
-            "filename": os.path.basename(zip_path),
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-
-        return FileResponse(zip_path, filename="clips_bundle.zip", media_type="application/zip")
-
+        return FileResponse(zip_path, media_type="application/zip", filename="clips_bundle.zip")
     except Exception as e:
-        print(f"❌ /clip_multi error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error":str(e)}, 500)
+
 
 # ============================================================
 # 🎙️ TRANSCRIBE (Whisper + Supabase Save)
