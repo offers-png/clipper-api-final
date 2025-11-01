@@ -60,6 +60,272 @@ async def startup_event():
 def health():
     return {"ok": True, "msg": "✅ ClipForge AI API running"}
 
+# ========= imports at top (keep your existing ones) =========
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
+
+EXEC = ThreadPoolExecutor(max_workers=int(os.getenv("CLIP_THREADS", "4")))
+
+# ========= helpers =========
+def _cache_name(kind: str, src_path: str, start: str, end: str, wm_text: str, quality: str) -> str:
+    key = f"{kind}|{os.path.basename(src_path)}|{start}|{end}|{wm_text}|{quality}"
+    h = hashlib.md5(key.encode()).hexdigest()[:16]
+    return os.path.join(UPLOAD_DIR, f"{kind}_{h}.mp4")
+
+def _hw_accel_args():
+    """
+    Enable HW acceleration if present:
+      - set USE_NVIDIA=1 to use NVENC
+      - set USE_VAAPI=/dev/dri/renderD128 to use VAAPI (Linux)
+    """
+    args = []
+    if os.getenv("USE_NVIDIA") == "1":
+        # NVENC (h264_nvenc)
+        args += ["-hwaccel", "cuda"]
+    elif os.getenv("USE_VAAPI"):
+        # VAAPI
+        args += ["-hwaccel", "vaapi", "-vaapi_device", os.getenv("USE_VAAPI")]
+    return args
+
+def _encode_codec_args(quality: str, preview: bool):
+    """
+    quality: "480p" for preview (P2), "1080p" for final (P4)
+    """
+    use_nvenc = (os.getenv("USE_NVIDIA") == "1")
+    if preview:
+        # very fast, small + 480p
+        vfilter = "scale=-2:480"
+        vcodec = "h264_nvenc" if use_nvenc else "libx264"
+        return ["-vf", vfilter, "-c:v", vcodec, "-preset", "p5" if use_nvenc else "veryfast", "-crf", "28", "-r", "30"]
+    else:
+        # final 1080p
+        vfilter = "scale=-2:1080"
+        vcodec = "h264_nvenc" if use_nvenc else "libx264"
+        return ["-vf", vfilter, "-c:v", vcodec, "-preset", "p5" if use_nvenc else "veryfast", "-crf", "22", "-r", "30"]
+
+def _drawtext_filter(wm_text: str):
+    if not wm_text:
+        return None
+    wm_text = wm_text.replace("'", r"\'")
+    return f"drawtext=text='{wm_text}':x=w-tw-20:y=h-th-20:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.45:boxborderw=10"
+
+def _compose_vf(scale_filter: str, drawtext: str | None):
+    if drawtext:
+        return f"{scale_filter},{drawtext}"
+    return scale_filter
+
+def _ffmpeg_clip(input_path: str, output_path: str, start: str, end: str, wm_text: str,
+                 preview: bool, fast_streamcopy_ok: bool):
+    """
+    - preview=True → 480p quick encode
+    - preview=False → 1080p final encode
+    - fast_streamcopy_ok only used if no filters needed (rare for preview/final since we scale)
+    """
+    # base args
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error"] + _hw_accel_args()
+    # seek early for speed
+    args += ["-ss", start, "-to", end, "-i", input_path]
+
+    # choose encode path
+    if preview:
+        codec_args = _encode_codec_args("480p", preview=True)
+    else:
+        codec_args = _encode_codec_args("1080p", preview=False)
+
+    # inject drawtext inside vf
+    # find scale from codec_args (-vf scale=-2:480 or 1080)
+    vf_index = codec_args.index("-vf") + 1
+    codec_args[vf_index] = _compose_vf(codec_args[vf_index], _drawtext_filter(wm_text))
+
+    # audio
+    codec_args += ["-c:a", "aac", "-b:a", "192k"]
+
+    cmd = args + codec_args + ["-movflags", "+faststart", "-y", output_path]
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
+
+# ========= TRANSCRIBE with segments (timestamps) =========
+@app.post("/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(None),
+    url: str = Form(None),
+    user_email: str = Form("guest@clipper.com")
+):
+    tmp_path = None
+    audio_path = None
+    try:
+        os.makedirs("/tmp", exist_ok=True)
+
+        # A) file upload
+        if file:
+            suffix = os.path.splitext(file.filename)[1] or ".mp4"
+            tmp_path = os.path.join("/tmp", f"upl_{datetime.now().timestamp()}{suffix}")
+            with open(tmp_path, "wb") as f:
+                f.write(await file.read())
+        # B) URL
+        elif url:
+            tmp_path = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.mp4")
+            p = subprocess.run(["yt-dlp", "-f", "mp4", "-o", tmp_path, url],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+            if p.returncode != 0 or not os.path.exists(tmp_path):
+                return JSONResponse({"error": "Failed to fetch URL"}, 400)
+        else:
+            return JSONResponse({"error": "No file or URL provided."}, 400)
+
+        # Extract audio MP3 for Whisper
+        audio_path = tmp_path.rsplit(".", 1)[0] + ".mp3"
+        p2 = subprocess.run(["ffmpeg", "-y", "-i", tmp_path, "-vn", "-acodec", "libmp3lame", "-b:a", "192k", audio_path],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if p2.returncode != 0:
+            return JSONResponse({"error": "FFmpeg could not convert to audio"}, 500)
+
+        # Whisper with timestamps (verbose_json)
+        with open(audio_path, "rb") as af:
+            resp = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=af,
+                response_format="verbose_json"
+            )
+
+        full_text = resp.get("text") or ""
+        segments = []
+        for seg in resp.get("segments", []):
+            # keep only essential fields
+            segments.append({
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "text": seg.get("text", "").strip()
+            })
+
+        # store (best-effort) in Supabase
+        try:
+            supabase.table("transcriptions").insert({
+                "user_email": user_email,
+                "text": full_text,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+        except Exception as e:
+            print("⚠️ Supabase insert warning:", e)
+
+        return JSONResponse({"text": full_text, "segments": segments})
+    except Exception as e:
+        print("❌ /transcribe error:", e)
+        return JSONResponse({"error": str(e)}, 500)
+    finally:
+        for pth in [tmp_path, audio_path]:
+            try:
+                if pth and os.path.exists(pth):
+                    os.remove(pth)
+            except:
+                pass
+
+# ========= PREVIEW endpoint (P2 480p) =========
+@app.post("/clip_preview")
+async def clip_preview(
+    file: UploadFile = File(...),
+    start: str = Form(...),
+    end: str = Form(...),
+    wm_text: str = Form("")
+):
+    try:
+        # save upload
+        src = os.path.join(UPLOAD_DIR, file.filename)
+        with open(src, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # cache
+        out_path = _cache_name("preview", src, start, end, wm_text, "480p")
+        if not os.path.exists(out_path):
+            r = await asyncio.get_event_loop().run_in_executor(
+                EXEC, _ffmpeg_clip, src, out_path, start, end, wm_text, True, False
+            )
+            if r.returncode != 0 or not os.path.exists(out_path):
+                return JSONResponse({"error": f"FFmpeg preview failed: {r.stderr}"}, 500)
+
+        return FileResponse(out_path, filename=os.path.basename(out_path), media_type="video/mp4")
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "FFmpeg timed out (preview)."}, 504)
+    except Exception as e:
+        print("❌ /clip_preview error:", e)
+        return JSONResponse({"error": str(e)}, 500)
+
+# ========= FINAL (P4 1080p) =========
+@app.post("/clip")
+async def clip_video(
+    file: UploadFile = File(...),
+    start: str = Form(...),
+    end: str = Form(...),
+    wm_text: str = Form("")
+):
+    try:
+        src = os.path.join(UPLOAD_DIR, file.filename)
+        with open(src, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        out_path = _cache_name("final", src, start, end, wm_text, "1080p")
+        r = await asyncio.get_event_loop().run_in_executor(
+            EXEC, _ffmpeg_clip, src, out_path, start, end, wm_text, False, False
+        )
+        if r.returncode != 0 or not os.path.exists(out_path):
+            return JSONResponse({"error": f"FFmpeg final failed: {r.stderr}"}, 500)
+
+        return FileResponse(out_path, filename=os.path.basename(out_path), media_type="video/mp4")
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "FFmpeg timed out (final)."}, 504)
+    except Exception as e:
+        print("❌ /clip error:", e)
+        return JSONResponse({"error": str(e)}, 500)
+
+# ========= MULTI (parallel) =========
+@app.post("/clip_multi")
+async def clip_multi(
+    file: UploadFile = File(...),
+    sections: str = Form(...),
+    wm_text: str = Form("")
+):
+    try:
+        data = json.loads(sections)
+        if not isinstance(data, list) or not data:
+            return JSONResponse({"error": "sections must be a JSON array"}, 400)
+
+        src = os.path.join(UPLOAD_DIR, file.filename)
+        with open(src, "wb") as f:
+            f.write(await file.read())
+
+        zip_path = os.path.join(UPLOAD_DIR, _cache_name("zip", src, "0", "0", wm_text, "multi").split(".mp4")[0] + ".zip")
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+
+        tasks = []
+        out_files = []
+
+        def _one(idx, s, e):
+            out_path = os.path.join(UPLOAD_DIR, f"clip_{idx:02d}.mp4")
+            out_files.append(out_path)
+            return _ffmpeg_clip(src, out_path, s, e, wm_text, False, False)
+
+        for i, sec in enumerate(data, 1):
+            s = str(sec.get("start", "")).strip()
+            e = str(sec.get("end", "")).strip()
+            if not s or not e:
+                return JSONResponse({"error": f"Missing start/end in section {i}"}, 400)
+            tasks.append(asyncio.get_event_loop().run_in_executor(EXEC, _one, i, s, e))
+
+        # run in parallel
+        results = await asyncio.gather(*tasks)
+        for r in results:
+            if r.returncode != 0:
+                return JSONResponse({"error": f"FFmpeg failed: {r.stderr}"}, 500)
+
+        with ZipFile(zip_path, "w") as zipf:
+            for p in out_files:
+                if os.path.exists(p):
+                    zipf.write(p, arcname=os.path.basename(p))
+
+        return FileResponse(zip_path, media_type="application/zip", filename="clips_bundle.zip")
+    except Exception as e:
+        print("❌ /clip_multi error:", e)
+        return JSONResponse({"error": str(e)}, 500)
+
 # =====================
 # Helpers
 # =====================
