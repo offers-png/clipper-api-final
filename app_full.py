@@ -182,8 +182,95 @@ async def clip_multi(
     except Exception as e:
         return JSONResponse({"error":str(e)}, 500)
 
+# =========================
+# 🤖 AI Chat Helper
+# =========================
+from fastapi import Body
 
-# ============================================================
+SYSTEM_PROMPT = (
+    "You are ClipForge AI, an editing copilot. "
+    "Be concise and practical. When asked to find moments, prefer 10–45s ranges. "
+    "If a transcript is provided, reference it directly."
+)
+
+@app.post("/ai_chat")
+async def ai_chat(
+    user_message: str = Form(...),
+    transcript: str = Form(""),
+    history: str = Form("[]")  # JSON array of {role, content}
+):
+    """
+    history: JSON string of messages like:
+      [{"role":"user","content":"..."},{"role":"assistant","content":"..."}]
+    """
+    try:
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if transcript:
+            msgs.append({"role": "system", "content": f"Transcript:\n{transcript[:12000]}"})
+        try:
+            prior = json.loads(history) if history else []
+            if isinstance(prior, list):
+                msgs.extend(prior)
+        except Exception:
+            pass
+        msgs.append({"role": "user", "content": user_message})
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.3,
+            messages=msgs,
+        )
+        out = resp.choices[0].message.content.strip()
+        return JSONResponse({"reply": out})
+    except Exception as e:
+        print("❌ /ai_chat error:", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =========================
+# 🎬 Auto-Clip (AI finds moments)
+# =========================
+@app.post("/auto_clip")
+async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
+    try:
+        prompt = (
+            "From this transcript, pick up to {k} short, high-impact moments (10–45s). "
+            "Return strict JSON with key 'clips' as a list of objects: "
+            "[{{\"start\":\"HH:MM:SS\",\"end\":\"HH:MM:SS\",\"summary\":\"one line\"}}, ...].\n\n"
+            "Transcript:\n{t}"
+        ).format(k=max_clips, t=transcript[:12000])
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        # Try to extract JSON safely
+        raw = resp.choices[0].message.content
+        try:
+            data = json.loads(raw)
+        except Exception:
+            # fallback: try to find JSON block
+            start = raw.find("{")
+            end = raw.rfind("}")
+            data = json.loads(raw[start:end+1]) if start != -1 and end != -1 else {"clips": []}
+
+        clips = data.get("clips", [])
+        # normalize & guard
+        norm = []
+        for c in clips[:max_clips]:
+            s = str(c.get("start","00:00:00")).strip()
+            e = str(c.get("end","00:00:10")).strip()
+            summ = str(c.get("summary","")).strip()[:140]
+            norm.append({"start": s, "end": e, "summary": summ})
+        return JSONResponse({"clips": norm})
+    except Exception as e:
+        print("❌ /auto_clip error:", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+#============================================================
 # 🎙️ TRANSCRIBE (Whisper + Supabase Save)
 # ============================================================
 @app.post("/transcribe")
