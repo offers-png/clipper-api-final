@@ -1,3 +1,6 @@
+# add with other imports
+from openai import OpenAI
+client = OpenAI()  # requires OPENAI_API_KEY env
 # app.py
 import os, json, shutil, asyncio, subprocess
 from datetime import datetime, timedelta
@@ -221,3 +224,102 @@ async def clip_multi_endpoint(
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
+    # ------------------------------
+# Transcribe (file or URL via yt-dlp)
+# ------------------------------
+@app.post("/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(None),
+    url: str = Form(None),
+):
+    try:
+        if not (file or url):
+            return JSONResponse({"ok": False, "error":"No file or URL provided."}, 400)
+
+        # stage source
+        if file:
+            src = os.path.join(TMP_DIR, f"upl_{nowstamp()}_{safe(file.filename)}")
+            with open(src, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+        else:
+            src = os.path.join(TMP_DIR, f"remote_{nowstamp()}.mp4")
+            code, err = run(["yt-dlp","-f","mp4","-o",src,url], timeout=300)
+            if code != 0 or not os.path.exists(src):
+                return JSONResponse({"ok": False, "error":"Failed to fetch URL."}, 400)
+
+        # convert to mp3 (faster for whisper)
+        mp3 = src.rsplit(".",1)[0]+".mp3"
+        code, err = run(["ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k",mp3], timeout=600)
+        if code != 0 or not os.path.exists(mp3):
+            return JSONResponse({"ok": False, "error": f"FFmpeg convert failed: {err}"}, 500)
+
+        # whisper
+        with open(mp3, "rb") as a:
+            tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
+        text = tr.strip() if isinstance(tr, str) else str(tr)
+        return JSONResponse({"ok": True, "text": text or "(no text)"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+    finally:
+        for p in (locals().get("src"), locals().get("mp3")):
+            try:
+                if p and os.path.exists(p): os.remove(p)
+            except: pass
+
+# ------------------------------
+# AI helper (chat) + auto-clip
+# ------------------------------
+SYSTEM_PROMPT = (
+    "You are ClipForge AI, an editing copilot. Be concise and practical. "
+    "When asked to find moments, suggest 10–45s ranges using HH:MM:SS."
+)
+
+@app.post("/ai_chat")
+async def ai_chat(
+    user_message: str = Form(...),
+    transcript: str = Form(""),
+    history: str = Form("[]")
+):
+    try:
+        msgs = [{"role":"system","content":SYSTEM_PROMPT}]
+        if transcript:
+            msgs.append({"role":"system","content":f"Transcript:\n{transcript[:12000]}"} )
+        try:
+            prev = json.loads(history)
+            if isinstance(prev, list): msgs += prev
+        except: pass
+        msgs.append({"role":"user","content":user_message})
+
+        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.3, messages=msgs)
+        out = resp.choices[0].message.content.strip()
+        return JSONResponse({"ok": True, "reply": out})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+
+@app.post("/auto_clip")
+async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
+    try:
+        prompt = (
+            "From this transcript, pick up to {k} high-impact short moments (10–45s). "
+            "Return strict JSON with key 'clips' = list of {{start,end,summary}}.\n\nTranscript:\n{t}"
+        ).format(k=max_clips, t=transcript[:12000])
+        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.2,
+                                              messages=[{"role":"user","content":prompt}])
+        raw = resp.choices[0].message.content
+        try:
+            data = json.loads(raw)
+        except:
+            s,e = raw.find("{"), raw.rfind("}")
+            data = json.loads(raw[s:e+1]) if s!=-1 and e!=-1 else {"clips":[]}
+
+        clips = []
+        for c in (data.get("clips") or [])[:max_clips]:
+            clips.append({
+                "start": str(c.get("start","00:00:00")).strip(),
+                "end":   str(c.get("end","00:00:10")).strip(),
+                "summary": str(c.get("summary","")).strip()[:140]
+            })
+        return JSONResponse({"ok": True, "clips": clips})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+
