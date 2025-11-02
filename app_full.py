@@ -9,23 +9,24 @@ from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
 from zipfile import ZipFile
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from openai import OpenAI
 from supabase import create_client, Client
+import requests
 
 # ============================================================
 # 🔧 App & Env
 # ============================================================
-app = FastAPI(title="ClipForge AI Backend (Stable Lite)", version="2.0.0")
+app = FastAPI(title="ClipForge AI Backend (Stable Lite)", version="2.1.0")
 client = OpenAI()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 BASE_DIR = "/data"
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -38,7 +39,7 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(PREVIEW_DIR, exist_ok=True)
 os.makedirs(TMP_DIR, exist_ok=True)
 
-# Serve generated files for preview/download
+# Serve generated files
 app.mount("/media/exports", StaticFiles(directory=EXPORT_DIR), name="exports")
 app.mount("/media/previews", StaticFiles(directory=PREVIEW_DIR), name="previews")
 
@@ -54,6 +55,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Public base URL for absolute links (fallback to request.base_url)
+PUBLIC_BASE = os.getenv("PUBLIC_BASE", "").rstrip("/")
 
 # ============================================================
 # 🧹 Cleanup
@@ -75,7 +79,6 @@ def _cleanup_folder(folder: str, days_old: int = 3) -> int:
 
 @app.on_event("startup")
 async def _startup():
-    # run cleanup in background
     async def _task():
         removed = 0
         removed += _cleanup_folder(UPLOAD_DIR)
@@ -90,17 +93,13 @@ async def _startup():
 # ============================================================
 @app.get("/")
 def root():
-    return {"ok": True, "service": "ClipForge AI Backend (Stable Lite) v2"}
+    return {"ok": True, "service": "ClipForge AI Backend (Stable Lite) v2.1.0"}
 
 # ============================================================
-# 🎛️ FFmpeg helpers
+# 🧭 Utils
 # ============================================================
 def _run_ffmpeg(cmd: List[str], timeout: int = 1800) -> Tuple[int, str]:
-    """Run ffmpeg and return (code, stderr)."""
-    proc = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, timeout=timeout
-    )
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
     return proc.returncode, proc.stderr
 
 def _timestamp():
@@ -110,7 +109,6 @@ def _safe_name(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in ("-", "_", "."))[:120]
 
 def _compose_vf(scale_filter: str, drawtext: Optional[str]) -> List[str]:
-    """Compose -vf chain with optional drawtext."""
     if drawtext:
         return ["-vf", f"{scale_filter},drawtext={drawtext}"]
     else:
@@ -123,6 +121,46 @@ def _drawtext_expr(text: str) -> str:
         f"text='{safe}':x=w-tw-20:y=h-th-20:"
         "fontcolor=white:fontsize=28:box=1:boxcolor=black@0.45:boxborderw=10"
     )
+
+def _scale_filter(target_h: int) -> str:
+    # keep aspect ratio; enforce even sizes for x264
+    return f"scale=-2:{target_h}:flags=lanczos"
+
+def _abs_url(request: Request, path: str) -> str:
+    if PUBLIC_BASE:
+        return f"{PUBLIC_BASE}{path}"
+    base = str(request.base_url).rstrip("/")
+    return f"{base}{path}"
+
+def _make_paths(original_name: str, start: str, end: str) -> Tuple[str, str]:
+    base = _safe_name(os.path.splitext(original_name)[0] or "clip")
+    stamp = _timestamp()
+    preview_name = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_prev_{stamp}.mp4"
+    final_name   = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_1080_{stamp}.mp4"
+    return os.path.join(PREVIEW_DIR, preview_name), os.path.join(EXPORT_DIR, final_name)
+
+def _download_to_tmp(url: str) -> str:
+    """
+    Download remote media to a temp file. Uses yt-dlp for known platforms,
+    falls back to HTTP stream otherwise.
+    """
+    tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+    u = url.lower()
+    if any(k in u for k in ["youtube", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "x.com"]):
+        p = subprocess.run(
+            ["yt-dlp", "-f", "mp4", "-o", tmp_path, url],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300
+        )
+        if p.returncode != 0 or not os.path.exists(tmp_path):
+            raise RuntimeError("yt-dlp failed to fetch URL")
+    else:
+        r = requests.get(url, stream=True, timeout=60)
+        if r.status_code != 200:
+            raise RuntimeError(f"Failed to download: HTTP {r.status_code}")
+        with open(tmp_path, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+    return tmp_path
 
 # ============================================================
 # 🔊 Transcription (Whisper) + Supabase save
@@ -142,14 +180,7 @@ async def transcribe_audio(
             with open(tmp_path, "wb") as f:
                 f.write(await file.read())
         elif url:
-            tmp_path = os.path.join(TMP_DIR, f"remote_{_timestamp()}.mp4")
-            # Keep it simple: mp4 best-effort (Render has yt-dlp)
-            p = subprocess.run(
-                ["yt-dlp", "-f", "mp4", "-o", tmp_path, url],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300
-            )
-            if p.returncode != 0 or not os.path.exists(tmp_path):
-                return JSONResponse({"error": "Failed to fetch URL via yt-dlp."}, 400)
+            tmp_path = _download_to_tmp(url)
         else:
             return JSONResponse({"error": "No file or URL provided."}, 400)
 
@@ -161,9 +192,8 @@ async def transcribe_audio(
 
         # Whisper
         with open(audio_mp3, "rb") as audio_file:
-            tr = client.audio.transcriptions.create(
-                model="whisper-1", file=audio_file, response_format="text"
-            )
+            tr = client.audio.transcriptions.create(model="whisper-1", file=audio_file, response_format="text")
+
         text_output = tr.strip() if isinstance(tr, str) else str(tr)
         if not text_output:
             text_output = "(no text found)"
@@ -217,11 +247,7 @@ async def ai_chat(
             pass
         msgs.append({"role": "user", "content": user_message})
 
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.3,
-            messages=msgs,
-        )
+        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.3, messages=msgs)
         out = resp.choices[0].message.content.strip()
         return JSONResponse({"reply": out})
     except Exception as e:
@@ -234,11 +260,7 @@ async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
             "From this transcript, pick up to {k} high-impact short moments (10–45s). "
             "Return strict JSON key 'clips' = list of objects with start,end,summary.\n\nTranscript:\n{t}"
         ).format(k=max_clips, t=transcript[:12000])
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.2, messages=[{"role": "user", "content": prompt}])
         raw = resp.choices[0].message.content
         try:
             data = json.loads(raw)
@@ -259,18 +281,9 @@ async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
 
 # ============================================================
 # 🎬 Clip pipeline (Preview 480p + Optional Export 1080p)
+#   — supports FILE or URL —
+#   — returns ABSOLUTE URLs —
 # ============================================================
-def _make_paths(original_name: str, start: str, end: str) -> Tuple[str, str]:
-    base = _safe_name(os.path.splitext(original_name)[0])
-    stamp = _timestamp()
-    preview_name = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_prev_{stamp}.mp4"
-    final_name   = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_1080_{stamp}.mp4"
-    return os.path.join(PREVIEW_DIR, preview_name), os.path.join(EXPORT_DIR, final_name)
-
-def _scale_filter(target_h: int) -> str:
-    # keep aspect ratio; enforce even sizes for x264
-    return f"scale=-2:{target_h}:flags=lanczos"
-
 async def _clip_once(
     source_path: str,
     start: str,
@@ -278,11 +291,11 @@ async def _clip_once(
     wm_text: Optional[str],
     want_preview_480: bool = True,
     want_final_1080: bool = False,
-) -> dict:
+) -> Tuple[Optional[str], Optional[str]]:
     preview_out, final_out = _make_paths(os.path.basename(source_path), start, end)
     drawtext = _drawtext_expr(wm_text) if wm_text else None
 
-    # --- Preview 480p (fast, small) ---
+    # Preview (fast, small)
     if want_preview_480:
         cmd_prev = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -294,7 +307,7 @@ async def _clip_once(
         if code != 0 or not os.path.exists(preview_out):
             raise RuntimeError(f"Preview failed: {err}")
 
-    # --- Final 1080p (optional, better quality) ---
+    # Final (quality)
     if want_final_1080:
         cmd_final = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -306,16 +319,16 @@ async def _clip_once(
         if code2 != 0 or not os.path.exists(final_out):
             raise RuntimeError(f"Final export failed: {err2}")
 
-    return {
-        "preview_url": f"/media/previews/{os.path.basename(preview_out)}" if want_preview_480 else None,
-        "final_url": f"/media/exports/{os.path.basename(final_out)}" if want_final_1080 else None,
-        "start": start,
-        "end": end,
-    }
+    return (
+        f"/media/previews/{os.path.basename(preview_out)}" if want_preview_480 else None,
+        f"/media/exports/{os.path.basename(final_out)}" if want_final_1080 else None,
+    )
 
-@app.post("/clip")  # single range => return preview (and optionally final)
+@app.post("/clip")
 async def clip_video(
-    file: UploadFile = File(...),
+    request: Request,
+    file: UploadFile = File(None),          # now optional
+    url: str = Form(None),                  # NEW: URL support
     start: str = Form(...),
     end: str = Form(...),
     watermark: str = Form("0"),
@@ -323,39 +336,78 @@ async def clip_video(
     preview_480: str = Form("1"),
     final_1080: str = Form("0"),
 ):
+    tmp = None
     try:
-        # Persist input
-        src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename))
-        with open(src_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        start = start.strip()
+        end = end.strip()
+        if not start or not end:
+            return JSONResponse({"error": "Start and end required."}, 400)
 
-        result = await _clip_once(
+        # Resolve source to a local path
+        if file is not None:
+            src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename or f"upload_{_timestamp()}.mp4"))
+            with open(src_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+        elif url:
+            tmp = _download_to_tmp(url)
+            # keep a safe copy name for consistent output names
+            safe_name = _safe_name(os.path.basename(url) or f"remote_{_timestamp()}.mp4")
+            src_path = os.path.join(UPLOAD_DIR, safe_name)
+            shutil.copy(tmp, src_path)
+        else:
+            return JSONResponse({"error": "Provide a file or a url."}, 400)
+
+        prev_rel, final_rel = await _clip_once(
             source_path=src_path,
-            start=start.strip(),
-            end=end.strip(),
+            start=start,
+            end=end,
             wm_text=wm_text if watermark == "1" else None,
             want_preview_480=(preview_480 == "1"),
             want_final_1080=(final_1080 == "1"),
         )
-        # Return URLs for UI preview & download
-        return JSONResponse({"ok": True, **result})
+
+        # Return absolute URLs for the frontend
+        return JSONResponse({
+            "ok": True,
+            "preview_url": _abs_url(request, prev_rel) if prev_rel else None,
+            "final_url": _abs_url(request, final_rel) if final_rel else None,
+            "start": start,
+            "end": end,
+        })
     except Exception as e:
         return JSONResponse({"error": str(e)}, 500)
+    finally:
+        try:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
-@app.post("/clip_multi")  # up to 5 ranges => parallel jobs + ZIP for finals; previews returned individually
+@app.post("/clip_multi")
 async def clip_multi(
-    file: UploadFile = File(...),
-    sections: str = Form(...),           # [{"start":"..","end":".."}, ...]
+    request: Request,
+    file: UploadFile = File(None),           # now optional
+    url: str = Form(None),                   # NEW
+    sections: str = Form(...),               # [{"start":"..","end":".."}, ...]
     watermark: str = Form("0"),
     wm_text: str = Form("@ClipForge"),
     preview_480: str = Form("1"),
     final_1080: str = Form("0"),
 ):
+    tmp = None
     try:
-        # save source once
-        src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename))
-        with open(src_path, "wb") as f:
-            f.write(await file.read())
+        # Resolve source
+        if file is not None:
+            src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename or f"upload_{_timestamp()}.mp4"))
+            with open(src_path, "wb") as f:
+                f.write(await file.read())
+        elif url:
+            tmp = _download_to_tmp(url)
+            safe_name = _safe_name(os.path.basename(url) or f"remote_{_timestamp()}.mp4")
+            src_path = os.path.join(UPLOAD_DIR, safe_name)
+            shutil.copy(tmp, src_path)
+        else:
+            return JSONResponse({"error": "Provide a file or a url."}, 400)
 
         try:
             segs = json.loads(sections)
@@ -368,20 +420,24 @@ async def clip_multi(
         want_prev = (preview_480 == "1")
         want_final = (final_1080 == "1")
 
-        # Launch in parallel (Stable Lite: limit to 3 workers)
         sem = asyncio.Semaphore(3)
         results = []
 
         async def _worker(s, e):
             async with sem:
-                return await _clip_once(src_path, s, e, wm, want_prev, want_final)
+                pr, fn = await _clip_once(src_path, s, e, wm, want_prev, want_final)
+                return {
+                    "preview_url": _abs_url(request, pr) if pr else None,
+                    "final_url": _abs_url(request, fn) if fn else None,
+                    "start": s,
+                    "end": e,
+                }
 
         tasks = [ _worker(str(s.get("start","")).strip(), str(s.get("end","")).strip()) for s in segs ]
         results = await asyncio.gather(*tasks)
 
         zip_url = None
         if want_final:
-            # gather final files into ZIP
             zip_name = f"clips_{_timestamp()}.zip"
             zip_path = os.path.join(EXPORT_DIR, zip_name)
             with ZipFile(zip_path, "w") as z:
@@ -390,8 +446,14 @@ async def clip_multi(
                         final_file = os.path.join(EXPORT_DIR, os.path.basename(r["final_url"]))
                         if os.path.exists(final_file):
                             z.write(final_file, arcname=os.path.basename(final_file))
-            zip_url = f"/media/exports/{zip_name}"
+            zip_url = _abs_url(request, f"/media/exports/{zip_name}")
 
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
     except Exception as e:
         return JSONResponse({"error": str(e)}, 500)
+    finally:
+        try:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
