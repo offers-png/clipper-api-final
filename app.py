@@ -1,21 +1,4 @@
-Got it, Sal — here’s the fully upgraded backend (Option B) with the fixes and boosts we agreed on:
-
-URL Transcribe fixed (uses yt-dlp -x to get MP3 directly; robust fallback to MP4→MP3).
-
-Bug fixes (your stray ] in JSONResponse, etc.).
-
-Faster clip path (stream-copy preview when watermark is off; safe fallback to fast encode).
-
-Preview JSON endpoint added (/clip_preview) so your UI can show the preview in the player instantly without downloading.
-
-Durations & file info returned with preview JSON.
-
-Keeps the original /clip (returns an MP4 blob) and /clip_multi (returns a ZIP) so nothing breaks.
-
-
-Drop this in as app.py and deploy.
-
-# app.py — ClipForge AI Backend v3 (Upgraded Option B)
+# app.py — ClipForge AI Backend v3 (robust URL + file transcription + fast clips)
 import os, json, shutil, asyncio, subprocess, glob
 from datetime import datetime
 from typing import Optional, List, Tuple
@@ -65,7 +48,8 @@ def safe(name: str) -> str:
 
 def run(cmd: List[str], timeout=1200) -> Tuple[int, str]:
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-    return p.returncode, p.stderr
+    # ffprobe prints to stdout; ffmpeg prints to stderr; return both merged into err for simplicity
+    return p.returncode, (p.stdout + "\n" + p.stderr).strip()
 
 def compose_vf(scale: Optional[str], drawtext: Optional[str]) -> List[str]:
     if scale and drawtext:
@@ -99,12 +83,12 @@ def duration_from(start: str, end: str) -> str:
 
 def ffprobe_duration(path: str) -> Optional[float]:
     try:
-        code, err = run([
+        code, out = run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path
         ], timeout=30)
         if code == 0:
-            return float(err.strip() or 0) if err else None
+            return float(out.strip().splitlines()[-1]) if out.strip() else None
     except Exception:
         pass
     return None
@@ -182,7 +166,6 @@ async def build_clip(
         "start": start, "end": end
     }
 
-    # Attach info (duration/size) for UI
     if want_preview and os.path.exists(prev_out):
         result["preview_seconds"] = ffprobe_duration(prev_out)
         result["preview_bytes"] = file_size(prev_out)
@@ -197,7 +180,7 @@ async def build_clip(
 def health():
     return {"ok": True, "service": APP_NAME}
 
-# A) JSON preview (best for in-app video player)
+# JSON preview for inline player
 @app.post("/clip_preview")
 async def clip_preview(
     file: UploadFile = File(...),
@@ -223,7 +206,7 @@ async def clip_preview(
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
 
-# B) Keep original /clip behavior: returns a preview MP4 blob (back-compat)
+# Back-compat: return preview MP4 blob
 @app.post("/clip")
 async def clip_endpoint(
     file: UploadFile = File(...),
@@ -241,8 +224,8 @@ async def clip_endpoint(
 
         result = await build_clip(
             src, start.strip(), end.strip(),
-            want_preview=True,           # always build preview for this endpoint
-            want_final=False,            # blob is preview
+            want_preview=True,
+            want_final=False,
             watermark_text=(wm_text if watermark == "1" else None),
         )
         if not result.get("preview_url"):
@@ -285,7 +268,6 @@ async def clip_multi_endpoint(
         tasks = [worker(s.get("start","00:00:00"), s.get("end","00:00:10")) for s in segs]
         results = await asyncio.gather(*tasks)
 
-        # If finals requested -> zip finals; else zip previews (fast)
         zip_name = f"clips_{nowstamp()}.zip"
         zip_path = os.path.join(EXPORT_DIR, zip_name)
         with ZipFile(zip_path, "w") as z:
@@ -297,60 +279,78 @@ async def clip_multi_endpoint(
                     if os.path.exists(fp):
                         z.write(fp, arcname=os.path.basename(fp))
 
-        # Also return the individual preview links for in-app preview if needed
         return JSONResponse({"ok": True, "items": results, "zip_url": f"/media/exports/{zip_name}"})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
 
 # ---------- Transcribe (file OR URL) ----------
-# Fix: URL path uses yt-dlp to extract MP3 directly; reliable fallback to MP4→MP3
+# Robust for BOTH URL + file:
+# 1) URL -> try direct audio extract to MP3 with template; if not, fallback to MP4 then convert.
+# 2) File -> convert to MP3 reliably.
 @app.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(None),
     url: str = Form(None),
 ):
+    base_marker = f"audio_{nowstamp()}"
+    candidate_base = os.path.join(TMP_DIR, base_marker)
+
+    def _find_mp3_candidates() -> List[str]:
+        return glob.glob(os.path.join(TMP_DIR, f"{base_marker}*.mp3"))
+
     try:
         if not (file or url):
             return JSONResponse({"ok": False, "error":"No file or URL provided."}, 400)
 
-        mp3 = None
+        mp3_path = None
 
         if url:
-            base = os.path.join(TMP_DIR, f"audio_{nowstamp()}")
-            # Write as base.mp3 via template output
+            # Try direct audio extraction to MP3 (forces overwrite, single item)
             code, err = run([
                 "yt-dlp",
+                "--no-playlist",
                 "-x", "--audio-format", "mp3", "--audio-quality", "192K",
-                "-o", base + ".%(ext)s",
+                "-o", candidate_base + ".%(ext)s",
+                "--force-overwrites",
                 url
-            ], timeout=600)
+            ], timeout=900)
 
-            mp3_candidate = base + ".mp3"
-            if code != 0 or not os.path.exists(mp3_candidate):
-                # Fallback: fetch MP4 then convert
-                src = os.path.join(TMP_DIR, f"remote_{nowstamp()}.mp4")
-                code2, err2 = run(["yt-dlp","-f","mp4","-o",src,url], timeout=600)
-                if code2 != 0 or not os.path.exists(src):
-                    return JSONResponse({"ok": False, "error": f"Failed to fetch URL. yt-dlp: {err or err2}"}, 400)
-                mp3 = src.rsplit(".",1)[0]+".mp3"
-                code3, err3 = run(["ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k",mp3], timeout=600)
-                if code3 != 0 or not os.path.exists(mp3):
-                    return JSONResponse({"ok": False, "error": f"FFmpeg convert failed: {err3}"}, 500)
+            # Grab any mp3 matching our base marker
+            cands = _find_mp3_candidates()
+            if code == 0 and cands:
+                mp3_path = sorted(cands, key=lambda p: os.path.getmtime(p))[-1]
             else:
-                mp3 = mp3_candidate
+                # Fallback: download mp4 then convert
+                src = candidate_base + ".mp4"
+                code2, err2 = run([
+                    "yt-dlp", "--no-playlist",
+                    "-f", "mp4", "-o", src, "--force-overwrites", url
+                ], timeout=900)
+                if code2 != 0 or not os.path.exists(src):
+                    return JSONResponse({"ok": False, "error": f"Failed to fetch URL. Details:\n{err or err2}"}, 400)
+                mp3_path = candidate_base + ".mp3"
+                code3, err3 = run([
+                    "ffmpeg","-y","-i",src,"-vn",
+                    "-acodec","libmp3lame","-b:a","192k", mp3_path
+                ], timeout=900)
+                if code3 != 0 or not os.path.exists(mp3_path):
+                    return JSONResponse({"ok": False, "error": f"FFmpeg convert failed: {err3}"}, 500)
 
         else:
-            # Uploaded file -> convert to mp3
+            # Uploaded file -> write then convert to mp3
             src = os.path.join(TMP_DIR, f"upl_{nowstamp()}_{safe(file.filename)}")
             with open(src, "wb") as f:
                 shutil.copyfileobj(file.file, f)
-            mp3 = src.rsplit(".",1)[0]+".mp3"
-            code, err = run(["ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k",mp3], timeout=600)
-            if code != 0 or not os.path.exists(mp3):
+            mp3_path = src.rsplit(".",1)[0] + ".mp3"
+            code, err = run([
+                "ffmpeg","-y","-i",src,"-vn",
+                "-acodec","libmp3lame","-b:a","192k", mp3_path
+            ], timeout=900)
+            if code != 0 or not os.path.exists(mp3_path):
                 return JSONResponse({"ok": False, "error": f"FFmpeg convert failed: {err}"}, 500)
 
-        # Whisper transcription
-        with open(mp3, "rb") as a:
+        # Whisper transcription (both paths)
+        with open(mp3_path, "rb") as a:
             tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
         text = tr.strip() if isinstance(tr, str) else str(tr)
 
@@ -358,12 +358,11 @@ async def transcribe_audio(
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
     finally:
-        # clean old temp media opportunistically
+        # Best-effort cleanup for old temp media (older than 2h)
         try:
             for path in glob.glob(os.path.join(TMP_DIR, "*")):
                 try:
-                    if os.path.isfile(path) and (path.endswith(".mp3") or path.endswith(".mp4")):
-                        # older than 2 hours -> remove
+                    if os.path.isfile(path) and (path.endswith(".mp3") or path.endswith(".mp4") or path.endswith(".webm") or path.endswith(".m4a")):
                         if (datetime.utcnow().timestamp() - os.path.getmtime(path)) > 2*3600:
                             os.remove(path)
                 except Exception:
@@ -371,7 +370,7 @@ async def transcribe_audio(
         except Exception:
             pass
 
-# ---------- AI helper (unchanged) ----------
+# ---------- AI helper ----------
 SYSTEM_PROMPT = (
     "You are ClipForge AI, an editing copilot. Be concise and practical. "
     "When asked to find moments, suggest 10–45s ranges using HH:MM:SS."
@@ -390,7 +389,8 @@ async def ai_chat(
         try:
             prev = json.loads(history)
             if isinstance(prev, list): msgs += prev
-        except: pass
+        except Exception:
+            pass
         msgs.append({"role":"user","content":user_message})
 
         resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.3, messages=msgs)
@@ -406,14 +406,17 @@ async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
             "From this transcript, pick up to {k} high-impact short moments (10–45s). "
             "Return strict JSON with key 'clips' = list of {{start,end,summary}}.\n\nTranscript:\n{t}"
         ).format(k=max_clips, t=transcript[:12000])
-        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.2,
-                                              messages=[{"role":"user","content":prompt}])
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[{"role":"user","content":prompt}]
+        )
         raw = resp.choices[0].message.content
         try:
             data = json.loads(raw)
-        except:
-            s,e = raw.find("{"), raw.rfind("}")
-            data = json.loads(raw[s:e+1]) if s!=-1 and e!=-1 else {"clips":[]}
+        except Exception:
+            s, e = raw.find("{"), raw.rfind("}")
+            data = json.loads(raw[s:e+1]) if s != -1 and e != -1 else {"clips": []}
 
         clips = []
         for c in (data.get("clips") or [])[:max_clips]:
