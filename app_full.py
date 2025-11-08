@@ -171,289 +171,121 @@ async def transcribe_audio(
     url: str = Form(None),
     user_email: str = Form("guest@clipforge.app")
 ):
-    tmp_path = None
-    audio_mp3 = None
+    """
+    Always returns: { "text": "<transcript>" } on 200.
+    On failure: { "error": "<reason>" } with 4xx/5xx.
+    URL path: tries direct MP3 extract; falls back to MP4→MP3.
+    Supabase: never blocks success; auto-fallback to common columns.
+    """
+    base_marker = f"audio_{nowstamp()}"
+    candidate_base = os.path.join(TMP_DIR, base_marker)
+
+    def find_mp3s() -> List[str]:
+        return glob.glob(os.path.join(TMP_DIR, f"{base_marker}*.mp3"))
+
+    tmp_paths = []  # collect temp files for cleanup
     try:
-        if file:
-            suffix = os.path.splitext(file.filename)[1] or ".webm"
-            tmp_path = os.path.join(TMP_DIR, f"upl_{_timestamp()}{suffix}")
-            with open(tmp_path, "wb") as f:
-                f.write(await file.read())
-        elif url:
-            tmp_path = _download_to_tmp(url)
+        # ------------- Resolve to MP3 -------------
+        mp3_path = None
+
+        if url:
+            # Try direct audio extract to MP3
+            code, err = run([
+                "yt-dlp", "--no-playlist",
+                "-x", "--audio-format", "mp3", "--audio-quality", "192K",
+                "-o", candidate_base + ".%(ext)s",
+                "--force-overwrites", url
+            ], timeout=900)
+
+            cands = find_mp3s()
+            if code == 0 and cands:
+                mp3_path = sorted(cands, key=lambda p: os.path.getmtime(p))[-1]
+                tmp_paths.append(mp3_path)
+            else:
+                # Fallback: fetch MP4 then convert
+                src = candidate_base + ".mp4"
+                code2, err2 = run([
+                    "yt-dlp","--no-playlist","-f","mp4","-o",src,"--force-overwrites", url
+                ], timeout=900)
+                if code2 != 0 or not os.path.exists(src):
+                    return JSONResponse({"error": f"Failed to fetch URL.\n{(err or err2)[:1200]}"},
+                                        status_code=400)
+                tmp_paths.append(src)
+                mp3_path = candidate_base + ".mp3"
+                code3, err3 = run([
+                    "ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k", mp3_path
+                ], timeout=900)
+                if code3 != 0 or not os.path.exists(mp3_path):
+                    return JSONResponse({"error": f"FFmpeg convert failed.\n{(err3 or '')[:1200]}"},
+                                        status_code=500)
+                tmp_paths.append(mp3_path)
+
+        elif file is not None:
+            src_name = safe(file.filename or "audio.webm")
+            src = os.path.join(TMP_DIR, f"upl_{nowstamp()}_{src_name}")
+            with open(src, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            tmp_paths.append(src)
+
+            mp3_path = src.rsplit(".",1)[0] + ".mp3"
+            code, err = run([
+                "ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k", mp3_path
+            ], timeout=900)
+            if code != 0 or not os.path.exists(mp3_path):
+                return JSONResponse({"error": f"FFmpeg audio convert failed.\n{(err or '')[:1200]}"},
+                                    status_code=500)
+            tmp_paths.append(mp3_path)
         else:
-            return JSONResponse({"error": "No file or URL provided."}, 400)
+            return JSONResponse({"error":"No file or URL provided."}, status_code=400)
 
-        # Convert to MP3 for Whisper
-        audio_mp3 = tmp_path.rsplit(".", 1)[0] + ".mp3"
-        code, err = _run_ffmpeg(["ffmpeg", "-y", "-i", tmp_path, "-vn", "-acodec", "libmp3lame", "-b:a", "192k", audio_mp3])
-        if code != 0 or not os.path.exists(audio_mp3):
-            return JSONResponse({"error": f"FFmpeg audio convert failed: {err}"}, 500)
+        # ------------- Whisper -------------
+        with open(mp3_path, "rb") as a:
+            tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
+        text = tr.strip() if isinstance(tr, str) else str(tr)
+        if not text:
+            text = "(no text)"
 
-        # Whisper
-        with open(audio_mp3, "rb") as audio_file:
-            tr = client.audio.transcriptions.create(model="whisper-1", file=audio_file, response_format="text")
-
-        text_output = tr.strip() if isinstance(tr, str) else str(tr)
-        if not text_output:
-            text_output = "(no text found)"
-
-        # Save to Supabase if configured
+        # ------------- Supabase (non-blocking) -------------
         if supabase:
             try:
-                supabase.table("transcriptions").insert({
-                    "user_email": user_email,
-                    "text": text_output,
+                # try supplied cols
+                payload = {
+                    SUPABASE_EMAIL_COLUMN: user_email,
+                    SUPABASE_TEXT_COLUMN: text,
                     "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            except Exception as e:
-                print("⚠️ Supabase insert error:", e)
+                }
+                resp = supabase.table(SUPABASE_TABLE).insert(payload).execute()
+            except Exception as e1:
+                # common fallback columns if schema differs
+                try:
+                    alt_payloads = [
+                        {"user_email": user_email, "content": text, "created_at": datetime.utcnow().isoformat()},
+                        {"email": user_email, "text": text, "created_at": datetime.utcnow().isoformat()},
+                        {"data": {"email": user_email, "text": text}, "created_at": datetime.utcnow().isoformat()},
+                    ]
+                    ok = False
+                    for alt in alt_payloads:
+                        try:
+                            supabase.table(SUPABASE_TABLE).insert(alt).execute()
+                            ok = True
+                            break
+                        except Exception:
+                            continue
+                    if not ok:
+                        print("⚠️ Supabase insert still failing. Last error:", e1)
+                except Exception as e2:
+                    print("⚠️ Supabase fallback failed:", e2)
 
-        return JSONResponse({"text": text_output})
+        # ------------- Stable JSON for UI -------------
+        return JSONResponse({"text": text}, status_code=200)
+
     except Exception as e:
-        print("❌ /transcribe error:", e)
-        return JSONResponse({"error": str(e)}, 500)
+        return JSONResponse({"error": str(e)}, status_code=500)
     finally:
-        for p in (tmp_path, audio_mp3):
+        # Cleanup temp
+        for p in tmp_paths:
             try:
                 if p and os.path.exists(p):
                     os.remove(p)
-            except Exception:
+            except:
                 pass
-
-# ============================================================
-# 🤖 AI Helper (titles, hooks, moments)
-# ============================================================
-SYSTEM_PROMPT = (
-    "You are ClipForge AI, an editing copilot. Be concise and practical. "
-    "When asked to find moments, suggest 10–45s ranges using HH:MM:SS."
-)
-
-@app.post("/ai_chat")
-async def ai_chat(
-    user_message: str = Form(...),
-    transcript: str = Form(""),
-    history: str = Form("[]")
-):
-    try:
-        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
-        if transcript:
-            msgs.append({"role": "system", "content": f"Transcript:\n{transcript[:12000]}"})
-        try:
-            prev = json.loads(history) if history else []
-            if isinstance(prev, list):
-                msgs.extend(prev)
-        except Exception:
-            pass
-        msgs.append({"role": "user", "content": user_message})
-
-        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.3, messages=msgs)
-        out = resp.choices[0].message.content.strip()
-        return JSONResponse({"reply": out})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 500)
-
-@app.post("/auto_clip")
-async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
-    try:
-        prompt = (
-            "From this transcript, pick up to {k} high-impact short moments (10–45s). "
-            "Return strict JSON key 'clips' = list of objects with start,end,summary.\n\nTranscript:\n{t}"
-        ).format(k=max_clips, t=transcript[:12000])
-        resp = client.chat.completions.create(model="gpt-4o-mini", temperature=0.2, messages=[{"role": "user", "content": prompt}])
-        raw = resp.choices[0].message.content
-        try:
-            data = json.loads(raw)
-        except Exception:
-            s, e = raw.find("{"), raw.rfind("}")
-            data = json.loads(raw[s:e+1]) if s != -1 and e != -1 else {"clips": []}
-        clips = data.get("clips", [])
-        out = []
-        for c in clips[:max_clips]:
-            out.append({
-                "start": str(c.get("start","00:00:00")).strip(),
-                "end": str(c.get("end","00:00:10")).strip(),
-                "summary": str(c.get("summary","")).strip()[:140]
-            })
-        return JSONResponse({"clips": out})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 500)
-
-# ============================================================
-# 🎬 Clip pipeline (Preview 480p + Optional Export 1080p)
-#   — supports FILE or URL —
-#   — returns ABSOLUTE URLs —
-# ============================================================
-async def _clip_once(
-    source_path: str,
-    start: str,
-    end: str,
-    wm_text: Optional[str],
-    want_preview_480: bool = True,
-    want_final_1080: bool = False,
-) -> Tuple[Optional[str], Optional[str]]:
-    preview_out, final_out = _make_paths(os.path.basename(source_path), start, end)
-    drawtext = _drawtext_expr(wm_text) if wm_text else None
-
-    # Preview (fast, small)
-    if want_preview_480:
-        cmd_prev = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end, "-i", source_path,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-            "-c:a", "aac", "-b:a", "128k",
-        ] + _compose_vf(_scale_filter(480), drawtext) + ["-movflags", "+faststart", "-y", preview_out]
-        code, err = _run_ffmpeg(cmd_prev, timeout=1200)
-        if code != 0 or not os.path.exists(preview_out):
-            raise RuntimeError(f"Preview failed: {err}")
-
-    # Final (quality)
-    if want_final_1080:
-        cmd_final = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-ss", start, "-to", end, "-i", source_path,
-            "-c:v", "libx264", "-preset", "faster", "-crf", "20",
-            "-c:a", "aac", "-b:a", "192k",
-        ] + _compose_vf(_scale_filter(1080), drawtext) + ["-movflags", "+faststart", "-y", final_out]
-        code2, err2 = _run_ffmpeg(cmd_final, timeout=1800)
-        if code2 != 0 or not os.path.exists(final_out):
-            raise RuntimeError(f"Final export failed: {err2}")
-
-    return (
-        f"/media/previews/{os.path.basename(preview_out)}" if want_preview_480 else None,
-        f"/media/exports/{os.path.basename(final_out)}" if want_final_1080 else None,
-    )
-
-@app.post("/clip")
-async def clip_video(
-    request: Request,
-    file: UploadFile = File(None),          # now optional
-    url: str = Form(None),                  # NEW: URL support
-    start: str = Form(...),
-    end: str = Form(...),
-    watermark: str = Form("0"),
-    wm_text: str = Form("@ClipForge"),
-    preview_480: str = Form("1"),
-    final_1080: str = Form("0"),
-):
-    tmp = None
-    try:
-        start = start.strip()
-        end = end.strip()
-        if not start or not end:
-            return JSONResponse({"error": "Start and end required."}, 400)
-
-        # Resolve source to a local path
-        if file is not None:
-            src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename or f"upload_{_timestamp()}.mp4"))
-            with open(src_path, "wb") as f:
-                shutil.copyfileobj(file.file, f)
-        elif url:
-            tmp = _download_to_tmp(url)
-            # keep a safe copy name for consistent output names
-            safe_name = _safe_name(os.path.basename(url) or f"remote_{_timestamp()}.mp4")
-            src_path = os.path.join(UPLOAD_DIR, safe_name)
-            shutil.copy(tmp, src_path)
-        else:
-            return JSONResponse({"error": "Provide a file or a url."}, 400)
-
-        prev_rel, final_rel = await _clip_once(
-            source_path=src_path,
-            start=start,
-            end=end,
-            wm_text=wm_text if watermark == "1" else None,
-            want_preview_480=(preview_480 == "1"),
-            want_final_1080=(final_1080 == "1"),
-        )
-
-        # Return absolute URLs for the frontend
-        return JSONResponse({
-            "ok": True,
-            "preview_url": _abs_url(request, prev_rel) if prev_rel else None,
-            "final_url": _abs_url(request, final_rel) if final_rel else None,
-            "start": start,
-            "end": end,
-        })
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 500)
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-@app.post("/clip_multi")
-async def clip_multi(
-    request: Request,
-    file: UploadFile = File(None),           # now optional
-    url: str = Form(None),                   # NEW
-    sections: str = Form(...),               # [{"start":"..","end":".."}, ...]
-    watermark: str = Form("0"),
-    wm_text: str = Form("@ClipForge"),
-    preview_480: str = Form("1"),
-    final_1080: str = Form("0"),
-):
-    tmp = None
-    try:
-        # Resolve source
-        if file is not None:
-            src_path = os.path.join(UPLOAD_DIR, _safe_name(file.filename or f"upload_{_timestamp()}.mp4"))
-            with open(src_path, "wb") as f:
-                f.write(await file.read())
-        elif url:
-            tmp = _download_to_tmp(url)
-            safe_name = _safe_name(os.path.basename(url) or f"remote_{_timestamp()}.mp4")
-            src_path = os.path.join(UPLOAD_DIR, safe_name)
-            shutil.copy(tmp, src_path)
-        else:
-            return JSONResponse({"error": "Provide a file or a url."}, 400)
-
-        try:
-            segs = json.loads(sections)
-        except Exception:
-            return JSONResponse({"error": "sections must be valid JSON list"}, 400)
-        if not isinstance(segs, list) or not segs:
-            return JSONResponse({"error": "sections must be a non-empty list"}, 400)
-
-        wm = wm_text if watermark == "1" else None
-        want_prev = (preview_480 == "1")
-        want_final = (final_1080 == "1")
-
-        sem = asyncio.Semaphore(3)
-        results = []
-
-        async def _worker(s, e):
-            async with sem:
-                pr, fn = await _clip_once(src_path, s, e, wm, want_prev, want_final)
-                return {
-                    "preview_url": _abs_url(request, pr) if pr else None,
-                    "final_url": _abs_url(request, fn) if fn else None,
-                    "start": s,
-                    "end": e,
-                }
-
-        tasks = [ _worker(str(s.get("start","")).strip(), str(s.get("end","")).strip()) for s in segs ]
-        results = await asyncio.gather(*tasks)
-
-        zip_url = None
-        if want_final:
-            zip_name = f"clips_{_timestamp()}.zip"
-            zip_path = os.path.join(EXPORT_DIR, zip_name)
-            with ZipFile(zip_path, "w") as z:
-                for r in results:
-                    if r.get("final_url"):
-                        final_file = os.path.join(EXPORT_DIR, os.path.basename(r["final_url"]))
-                        if os.path.exists(final_file):
-                            z.write(final_file, arcname=os.path.basename(final_file))
-            zip_url = _abs_url(request, f"/media/exports/{zip_name}")
-
-        return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, 500)
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
