@@ -425,25 +425,3 @@ async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
         return JSONResponse({"ok": True, "clips": clips})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
-
-What changed (quick):
-
-/transcribe now pulls MP3 directly from most URLs; no more moov atom not found.
-
-New /clip_preview returns JSON with preview_url, preview_seconds, preview_bytes so your UI can play the preview inline before download.
-
-/clip and /clip_multi original behavior kept (no breaking changes).
-
-Faster FFmpeg paths + safe fallbacks.
-
-
-If you want, I can also give you the tiny UI diff to:
-
-Hit /transcribe as-is (no change needed),
-
-Add a “Copy Transcript” button after text arrives,
-
-Use /clip_preview to render the preview video inside your existing preview box (no download until user clicks).
-
-
-Say the word and I’ll paste the exact React snippet next.
