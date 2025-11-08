@@ -1,47 +1,26 @@
-import os
-import io
-import json
-import shutil
-import asyncio
-import tempfile
-import subprocess
-from typing import Optional, List, Tuple
+import os, shutil, asyncio, subprocess, tempfile, json, requests
 from datetime import datetime, timedelta
 from zipfile import ZipFile
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from openai import OpenAI
 from supabase import create_client, Client
-import requests
 
-# ============================================================
-# 🔧 App & Env
-# ============================================================
-app = FastAPI(title="ClipForge AI Backend (Stable Lite)", version="2.1.0")
+# =====================
+# App & Clients
+# =====================
+app = FastAPI(title="ClipForge AI API", version="1.2.0")
 client = OpenAI()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-BASE_DIR = "/data"
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-EXPORT_DIR = os.path.join(BASE_DIR, "exports")
-PREVIEW_DIR = os.path.join(BASE_DIR, "previews")
-TMP_DIR = "/tmp"
-
+UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(EXPORT_DIR, exist_ok=True)
-os.makedirs(PREVIEW_DIR, exist_ok=True)
-os.makedirs(TMP_DIR, exist_ok=True)
-
-# Serve generated files
-app.mount("/media/exports", StaticFiles(directory=EXPORT_DIR), name="exports")
-app.mount("/media/previews", StaticFiles(directory=PREVIEW_DIR), name="previews")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,236 +35,258 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public base URL for absolute links (fallback to request.base_url)
-PUBLIC_BASE = os.getenv("PUBLIC_BASE", "").rstrip("/")
-
-# ============================================================
-# 🧹 Cleanup
-# ============================================================
-def _cleanup_folder(folder: str, days_old: int = 3) -> int:
-    now = datetime.now().timestamp()
-    cutoff = now - days_old * 86400
+# =====================
+# Housekeeping
+# =====================
+def auto_cleanup():
+    now = datetime.now()
+    cutoff = (now - timedelta(days=3)).timestamp()
     removed = 0
-    for root, _, files in os.walk(folder):
+    for root, _, files in os.walk(UPLOAD_DIR):
         for name in files:
             p = os.path.join(root, name)
             try:
                 if os.path.getmtime(p) < cutoff:
-                    os.remove(p)
-                    removed += 1
-            except Exception:
-                pass
-    return removed
+                    os.remove(p); removed += 1
+            except: pass
+    if removed:
+        print(f"🧹 Removed {removed} expired files")
 
 @app.on_event("startup")
-async def _startup():
-    async def _task():
-        removed = 0
-        removed += _cleanup_folder(UPLOAD_DIR)
-        removed += _cleanup_folder(EXPORT_DIR)
-        removed += _cleanup_folder(PREVIEW_DIR)
-        if removed:
-            print(f"🧹 Removed {removed} expired files")
-    asyncio.create_task(_task())
+async def startup_event():
+    asyncio.create_task(asyncio.to_thread(auto_cleanup))
 
-# ============================================================
-# ✅ Health
-# ============================================================
 @app.get("/")
-def root():
-    return {"ok": True, "service": "ClipForge AI Backend (Stable Lite) v2.1.0"}
+def health():
+    return {"ok": True, "msg": "✅ ClipForge AI API running"}
 
-# ============================================================
-# 🧭 Utils
-# ============================================================
-def _run_ffmpeg(cmd: List[str], timeout: int = 1800) -> Tuple[int, str]:
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-    return proc.returncode, proc.stderr
+# =====================
+# Helpers
+# =====================
+def _yt_url(u: str) -> bool:
+    u = (u or "").lower()
+    return any(k in u for k in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "x.com", "twitter.com"])
 
-def _timestamp():
-    return datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-
-def _safe_name(name: str) -> str:
-    return "".join(c for c in name if c.isalnum() or c in ("-", "_", "."))[:120]
-
-def _compose_vf(scale_filter: str, drawtext: Optional[str]) -> List[str]:
-    if drawtext:
-        return ["-vf", f"{scale_filter},drawtext={drawtext}"]
-    else:
-        return ["-vf", scale_filter]
-
-def _drawtext_expr(text: str) -> str:
-    # bottom-right boxed watermark
-    safe = text.replace("'", r"\'")
-    return (
-        f"text='{safe}':x=w-tw-20:y=h-th-20:"
-        "fontcolor=white:fontsize=28:box=1:boxcolor=black@0.45:boxborderw=10"
-    )
-
-def _scale_filter(target_h: int) -> str:
-    # keep aspect ratio; enforce even sizes for x264
-    return f"scale=-2:{target_h}:flags=lanczos"
-
-def _abs_url(request: Request, path: str) -> str:
-    if PUBLIC_BASE:
-        return f"{PUBLIC_BASE}{path}"
-    base = str(request.base_url).rstrip("/")
-    return f"{base}{path}"
-
-def _make_paths(original_name: str, start: str, end: str) -> Tuple[str, str]:
-    base = _safe_name(os.path.splitext(original_name)[0] or "clip")
-    stamp = _timestamp()
-    preview_name = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_prev_{stamp}.mp4"
-    final_name   = f"{base}_{start.replace(':','-')}-{end.replace(':','-')}_1080_{stamp}.mp4"
-    return os.path.join(PREVIEW_DIR, preview_name), os.path.join(EXPORT_DIR, final_name)
-
-def _download_to_tmp(url: str) -> str:
+def _download_media_to(path: str, url: str) -> None:
     """
-    Download remote media to a temp file. Uses yt-dlp for known platforms,
-    falls back to HTTP stream otherwise.
+    Try yt-dlp for social URLs; if not, do a simple GET stream.
+    Raises Exception on failure.
     """
-    tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    u = url.lower()
-    if any(k in u for k in ["youtube", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "x.com"]):
-        p = subprocess.run(
-            ["yt-dlp", "-f", "mp4", "-o", tmp_path, url],
+    if _yt_url(url):
+        proc = subprocess.run(
+            ["yt-dlp", "-f", "mp4", "-o", path, url],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300
         )
-        if p.returncode != 0 or not os.path.exists(tmp_path):
-            raise RuntimeError("yt-dlp failed to fetch URL")
-    else:
-        r = requests.get(url, stream=True, timeout=60)
+        if proc.returncode != 0 or not os.path.exists(path):
+            raise Exception(f"yt-dlp failed: {proc.stderr[:400]}")
+        return
+
+    # Direct URL fallback
+    with requests.get(url, stream=True, timeout=60) as r:
         if r.status_code != 200:
-            raise RuntimeError(f"Failed to download: HTTP {r.status_code}")
-        with open(tmp_path, "wb") as f:
+            raise Exception(f"HTTP {r.status_code} when downloading")
+        with open(path, "wb") as f:
             for chunk in r.iter_content(8192):
                 f.write(chunk)
-    return tmp_path
 
-# ============================================================
-# 🔊 Transcription (Whisper) + Supabase save
-# ============================================================
+def _ffmpeg_trim(input_path: str, out_path: str, start: str, end: str, *, fast: bool, wm_text: str):
+    vf = []
+    if wm_text:
+        draw = (
+            "drawtext=text='{t}':x=w-tw-20:y=h-th-20:"
+            "fontcolor=white:fontsize=28:box=1:boxcolor=black@0.45:boxborderw=10"
+        ).format(t=wm_text.replace("'", r"\'"))
+        vf = ["-vf", draw]
+
+    if fast and not vf:
+        cmd = ["ffmpeg","-hide_banner","-loglevel","error","-ss",start,"-to",end,"-i",input_path,
+               "-c:v","copy","-c:a","aac","-b:a","192k","-y",out_path]
+    else:
+        cmd = ["ffmpeg","-hide_banner","-loglevel","error","-ss",start,"-to",end,"-i",input_path,
+               "-c:v","libx264","-preset","veryfast","-c:a","aac","-b:a","192k","-y"] + vf + [out_path]
+
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
+    if r.returncode != 0 or not os.path.exists(out_path):
+        raise Exception(r.stderr[:400])
+
+# =====================
+# Clip Endpoints
+# =====================
+@app.post("/clip")
+async def clip_video(
+    file: UploadFile = File(...),
+    start: str = Form(...),
+    end: str = Form(...),
+    watermark: str = Form("0"),
+    wm_text: str = Form(""),
+    fast: str = Form("1"),
+):
+    try:
+        input_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(input_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        base, _ = os.path.splitext(file.filename)
+        out_path = os.path.join(UPLOAD_DIR, f"{base}_{start.replace(':','-')}-{end.replace(':','-')}.mp4")
+        _ffmpeg_trim(input_path, out_path, start, end, fast=(fast=="1"), wm_text=(wm_text if watermark=="1" else ""))
+
+        return FileResponse(out_path, filename=os.path.basename(out_path), media_type="video/mp4")
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error":"FFmpeg timed out"}, 504)
+    except Exception as e:
+        return JSONResponse({"error": f"FFmpeg failed: {str(e)}"}, 500)
+
+@app.post("/clip_multi")
+async def clip_multi(
+    file: UploadFile = File(...),
+    sections: str = Form(...),
+    watermark: str = Form("0"),
+    wm_text: str = Form(""),
+    fast: str = Form("1"),
+):
+    try:
+        data = json.loads(sections)
+        if not isinstance(data, list) or not data:
+            return JSONResponse({"error":"sections must be a JSON array"}, 400)
+
+        input_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        zip_path = os.path.join(UPLOAD_DIR, "clips_bundle.zip")
+        if os.path.exists(zip_path): os.remove(zip_path)
+
+        with ZipFile(zip_path, "w") as zipf:
+            for i, sec in enumerate(data, 1):
+                s = str(sec.get("start","")).strip()
+                e = str(sec.get("end","")).strip()
+                if not s or not e:
+                    return JSONResponse({"error": f"Missing start/end in section {i}"}, 400)
+
+                out_name = f"clip_{i}.mp4"
+                out_path = os.path.join(UPLOAD_DIR, out_name)
+                _ffmpeg_trim(input_path, out_path, s, e, fast=(fast=="1"), wm_text=(wm_text if watermark=="1" else ""))
+                zipf.write(out_path, arcname=out_name)
+
+        return FileResponse(zip_path, media_type="application/zip", filename="clips_bundle.zip")
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+# =====================
+# AI Helper
+# =====================
+SYSTEM_PROMPT = (
+    "You are ClipForge AI, an editing copilot. Be concise and practical. "
+    "When asked to find moments, suggest 10–45s ranges. If a transcript is provided, reference it."
+)
+
+@app.post("/ai_chat")
+async def ai_chat(
+    user_message: str = Form(...),
+    transcript: str = Form(""),
+    history: str = Form("[]")
+):
+    try:
+        msgs = [{"role":"system","content":SYSTEM_PROMPT}]
+        if transcript:
+            msgs.append({"role":"system","content":f"Transcript:\n{transcript[:12000]}"})
+        try:
+            prior = json.loads(history) if history else []
+            if isinstance(prior, list): msgs.extend(prior)
+        except: pass
+        msgs.append({"role":"user","content":user_message})
+
+        r = client.chat.completions.create(model="gpt-4o-mini", temperature=0.3, messages=msgs)
+        return {"reply": r.choices[0].message.content.strip()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+@app.post("/auto_clip")
+async def auto_clip(transcript: str = Form(...), max_clips: int = Form(3)):
+    try:
+        prompt = (
+            "From this transcript, pick up to {k} short, high-impact moments (10–45s). "
+            "Return JSON: {{\"clips\":[{{\"start\":\"HH:MM:SS\",\"end\":\"HH:MM:SS\",\"summary\":\"...\"}}]}}.\n\n"
+            "Transcript:\n{t}"
+        ).format(k=max_clips, t=transcript[:12000])
+
+        r = client.chat.completions.create(
+            model="gpt-4o-mini", temperature=0.2,
+            messages=[{"role":"user","content":prompt}]
+        )
+        raw = r.choices[0].message.content
+        try:
+            data = json.loads(raw)
+        except:
+            a, b = raw.find("{"), raw.rfind("}")
+            data = json.loads(raw[a:b+1]) if a!=-1 and b!=-1 else {"clips":[]}
+
+        out = []
+        for c in data.get("clips", [])[:max_clips]:
+            out.append({
+                "start": str(c.get("start","00:00:00")),
+                "end":   str(c.get("end","00:00:10")),
+                "summary": str(c.get("summary",""))[:140]
+            })
+        return {"clips": out}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+# =====================
+# Transcribe
+# =====================
 @app.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(None),
     url: str = Form(None),
-    user_email: str = Form("guest@clipforge.app")
+    user_email: str = Form("guest@clipforge.ai"),
 ):
-    """
-    Always returns: { "text": "<transcript>" } on 200.
-    On failure: { "error": "<reason>" } with 4xx/5xx.
-    URL path: tries direct MP3 extract; falls back to MP4→MP3.
-    Supabase: never blocks success; auto-fallback to common columns.
-    """
-    base_marker = f"audio_{nowstamp()}"
-    candidate_base = os.path.join(TMP_DIR, base_marker)
-
-    def find_mp3s() -> List[str]:
-        return glob.glob(os.path.join(TMP_DIR, f"{base_marker}*.mp3"))
-
-    tmp_paths = []  # collect temp files for cleanup
+    tmp = None; audio_mp3 = None
     try:
-        # ------------- Resolve to MP3 -------------
-        mp3_path = None
+        os.makedirs("/tmp", exist_ok=True)
 
-        if url:
-            # Try direct audio extract to MP3
-            code, err = run([
-                "yt-dlp", "--no-playlist",
-                "-x", "--audio-format", "mp3", "--audio-quality", "192K",
-                "-o", candidate_base + ".%(ext)s",
-                "--force-overwrites", url
-            ], timeout=900)
-
-            cands = find_mp3s()
-            if code == 0 and cands:
-                mp3_path = sorted(cands, key=lambda p: os.path.getmtime(p))[-1]
-                tmp_paths.append(mp3_path)
-            else:
-                # Fallback: fetch MP4 then convert
-                src = candidate_base + ".mp4"
-                code2, err2 = run([
-                    "yt-dlp","--no-playlist","-f","mp4","-o",src,"--force-overwrites", url
-                ], timeout=900)
-                if code2 != 0 or not os.path.exists(src):
-                    return JSONResponse({"error": f"Failed to fetch URL.\n{(err or err2)[:1200]}"},
-                                        status_code=400)
-                tmp_paths.append(src)
-                mp3_path = candidate_base + ".mp3"
-                code3, err3 = run([
-                    "ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k", mp3_path
-                ], timeout=900)
-                if code3 != 0 or not os.path.exists(mp3_path):
-                    return JSONResponse({"error": f"FFmpeg convert failed.\n{(err3 or '')[:1200]}"},
-                                        status_code=500)
-                tmp_paths.append(mp3_path)
-
-        elif file is not None:
-            src_name = safe(file.filename or "audio.webm")
-            src = os.path.join(TMP_DIR, f"upl_{nowstamp()}_{src_name}")
-            with open(src, "wb") as f:
-                shutil.copyfileobj(file.file, f)
-            tmp_paths.append(src)
-
-            mp3_path = src.rsplit(".",1)[0] + ".mp3"
-            code, err = run([
-                "ffmpeg","-y","-i",src,"-vn","-acodec","libmp3lame","-b:a","192k", mp3_path
-            ], timeout=900)
-            if code != 0 or not os.path.exists(mp3_path):
-                return JSONResponse({"error": f"FFmpeg audio convert failed.\n{(err or '')[:1200]}"},
-                                    status_code=500)
-            tmp_paths.append(mp3_path)
+        if file:
+            suf = os.path.splitext(file.filename)[1] or ".mp4"
+            tmp = os.path.join("/tmp", f"upl_{datetime.now().timestamp()}{suf}")
+            with open(tmp, "wb") as f:
+                f.write(await file.read())
+        elif url:
+            tmp = os.path.join("/tmp", f"remote_{datetime.now().timestamp()}.mp4")
+            _download_media_to(tmp, url)
         else:
-            return JSONResponse({"error":"No file or URL provided."}, status_code=400)
+            return JSONResponse({"error":"No file or URL provided."}, 400)
 
-        # ------------- Whisper -------------
-        with open(mp3_path, "rb") as a:
-            tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
-        text = tr.strip() if isinstance(tr, str) else str(tr)
-        if not text:
-            text = "(no text)"
+        audio_mp3 = tmp.rsplit(".",1)[0] + ".mp3"
+        p = subprocess.run(
+            ["ffmpeg","-y","-i",tmp,"-vn","-acodec","libmp3lame","-b:a","192k",audio_mp3],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if p.returncode != 0 or not os.path.exists(audio_mp3):
+            return JSONResponse({"error":"FFmpeg failed to create audio"}, 500)
 
-        # ------------- Supabase (non-blocking) -------------
-        if supabase:
-            try:
-                # try supplied cols
-                payload = {
-                    SUPABASE_EMAIL_COLUMN: user_email,
-                    SUPABASE_TEXT_COLUMN: text,
-                    "created_at": datetime.utcnow().isoformat()
-                }
-                resp = supabase.table(SUPABASE_TABLE).insert(payload).execute()
-            except Exception as e1:
-                # common fallback columns if schema differs
-                try:
-                    alt_payloads = [
-                        {"user_email": user_email, "content": text, "created_at": datetime.utcnow().isoformat()},
-                        {"email": user_email, "text": text, "created_at": datetime.utcnow().isoformat()},
-                        {"data": {"email": user_email, "text": text}, "created_at": datetime.utcnow().isoformat()},
-                    ]
-                    ok = False
-                    for alt in alt_payloads:
-                        try:
-                            supabase.table(SUPABASE_TABLE).insert(alt).execute()
-                            ok = True
-                            break
-                        except Exception:
-                            continue
-                    if not ok:
-                        print("⚠️ Supabase insert still failing. Last error:", e1)
-                except Exception as e2:
-                    print("⚠️ Supabase fallback failed:", e2)
+        with open(audio_mp3,"rb") as f:
+            t = client.audio.transcriptions.create(model="whisper-1", file=f, response_format="text")
 
-        # ------------- Stable JSON for UI -------------
-        return JSONResponse({"text": text}, status_code=200)
+        text = t.strip() if isinstance(t,str) else str(t)
+        if not text: text = "(no text found)"
 
+        # Save to Supabase
+        try:
+            res = supabase.table("transcriptions").insert({
+                "user_email": user_email,
+                "text": text,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+            tid = res.data[0]["id"] if res.data else None
+        except Exception as e:
+            print("Supabase insert error:", e)
+            tid = None
+
+        return {"text": text, "transcription_id": tid}
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e)}, 500)
     finally:
-        # Cleanup temp
-        for p in tmp_paths:
+        for pth in [tmp, audio_mp3]:
             try:
-                if p and os.path.exists(p):
-                    os.remove(p)
-            except:
-                pass
+                if pth and os.path.exists(pth): os.remove(pth)
+            except: pass
