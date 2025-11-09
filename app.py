@@ -162,6 +162,50 @@ def download_to_tmp(url: str) -> str:
                 f.write(chunk)
     return tmp_path
 
+# ----- DB helpers -----
+def sb():
+    # lazy create to avoid import crash when env not set
+    from supabase import create_client
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def upsert_video_row(user_id: str, src_url: str, duration_sec: int = None, transcript: str = None):
+    client_sb = sb()
+    if not client_sb: 
+        return None
+    payload = {
+        "user_id": user_id,
+        "src_url": src_url,
+        "duration_sec": duration_sec,
+        "transcript": transcript
+    }
+    return client_sb.table("videos").insert(payload).execute()
+
+def insert_clip_row(user_id: str, video_id: str, start_sec: int, end_sec: int, preview_url: str, final_url: str, transcript: str = None):
+    client_sb = sb()
+    if not client_sb: 
+        return None
+    payload = {
+        "user_id": user_id,
+        "video_id": video_id,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
+        "preview_url": preview_url,
+        "final_url": final_url,
+        "transcript": transcript
+    }
+    return client_sb.table("clips").insert(payload).execute()
+
+def charge_seconds(user_id: str, used_seconds: int):
+    client_sb = sb()
+    if not client_sb:
+        return
+    try:
+        client_sb.rpc("charge_seconds", {"u": user_id, "used": used_seconds}).execute()
+    except Exception as e:
+        print("⚠️ charge_seconds RPC failed:", e)
+
 # =========================
 # Health (Render checks)
 # =========================
