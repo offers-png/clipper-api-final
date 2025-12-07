@@ -28,8 +28,8 @@ async def clip_link(url: str = Form(...), start: str = Form(...), end: str = For
         input_path = os.path.join(UPLOAD_DIR, f"{file_id}.mp4")
         output_path = os.path.join(UPLOAD_DIR, f"trimmed_{file_id}.mp4")
 
-        if not run_cmd(["yt-dlp", "-o", input_path, url]):
-            return JSONResponse({"error": "❌ Unable to fetch that link. It may be private or DRM-protected."}, status_code=400)
+       if not run_cmd(["yt-dlp", "-x", "--audio-format", "mp3", "--extractor-args", "youtube:player-client=android", "--no-check-certificates", "-o", input_path, url]):
+    return JSONResponse({"error": "❌ Unable to fetch that link. It may be private, region-locked, or DRM-protected."}, status_code=400)
 
         run_cmd(["ffmpeg", "-y", "-i", input_path, "-ss", start, "-to", end, "-c", "copy", output_path])
         return FileResponse(output_path, media_type="video/mp4", filename=f"trimmed_{file_id}.mp4")
