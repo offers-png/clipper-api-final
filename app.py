@@ -1,10 +1,11 @@
-# app.py — ClipForge AI Backend (Stable, Multi-Clip + Modal Preview)
+# app.py
+
 import os, json, shutil, asyncio, subprocess, tempfile
 from datetime import datetime
 from typing import Optional, List, Tuple
 from zipfile import ZipFile
 
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request   # ✅ All FastAPI imports here
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -424,6 +425,29 @@ async def ask_ai(request: Request):
             ]
             from fastapi import UploadFile, File
 
+@app.post("/ask")
+async def ask_ai(request: Request):
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        if not prompt:
+            return JSONResponse({"error": "Prompt is required"}, status_code=400)
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are ClipForge AI assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        reply = response.choices[0].message.content.strip()
+        return {"response": reply}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ✅ New route added cleanly at the bottom
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
@@ -433,10 +457,3 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": True, "path": dest_path}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-        )
-        reply = response.choices[0].message.content.strip()
-        return {"response": reply}
-
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
