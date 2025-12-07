@@ -386,3 +386,28 @@ async def transcribe_audio(
             try:
                 if p and os.path.exists(p): os.remove(p)
             except Exception: pass
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from openai import OpenAI
+
+@app.post("/ask")
+async def ask_ai(request: Request):
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        if not prompt:
+            return JSONResponse({"error": "Prompt is required"}, status_code=400)
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are ClipForge AI assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        reply = response.choices[0].message.content.strip()
+        return {"response": reply}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
