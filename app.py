@@ -395,17 +395,20 @@ async def transcribe_audio(
                 except Exception as e2:
                     print("⚠️ Supabase insert failed; skipping.", e1, "/", e2)
 
-        return JSONResponse({"ok": True, "text": text_output})
+                return JSONResponse({"ok": True, "text": text_output})
     except Exception as e:
         print("❌ /transcribe error:", e)
-        return JSONResponse({"ok": False, "error": str(e)}, 500)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
     finally:
         for p in (tmp_path, audio_mp3):
             try:
-                if p and os.path.exists(p): os.remove(p)
-            except Exception: pass
-                
-         @app.post("/ask")
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+
+@app.post("/ask")
 async def ask_ai(request: Request):
     try:
         body = await request.json()
