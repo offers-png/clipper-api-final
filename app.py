@@ -428,9 +428,15 @@ async def ask_ai(request: Request):
         reply = response.choices[0].message.content.strip()
         return {"response": reply}
 
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    @app.post("/data-upload")
+   # --- Previous endpoint ends cleanly here ---
+except Exception as e:
+    return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# -------------------------------
+# File upload route
+# -------------------------------
+@app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
         # Ensure /data directory exists
@@ -450,7 +456,10 @@ async def data_upload(file: UploadFile = File(...)):
         with open(dest_path, "r", encoding="utf-8") as check:
             first_line = check.readline()
             if "Netscape" not in first_line:
-                return {"ok": False, "error": "Invalid cookies format. Must start with 'Netscape HTTP Cookie File'."}
+                return {
+                    "ok": False,
+                    "error": "Invalid cookies format. Must start with 'Netscape HTTP Cookie File'."
+                }
 
         return {"ok": True, "path": dest_path}
 
@@ -458,6 +467,9 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
 
+# -------------------------------
+# Verify cookies route
+# -------------------------------
 @app.get("/verify-cookies")
 async def verify_cookies():
     try:
