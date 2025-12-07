@@ -430,9 +430,7 @@ async def ask_ai(request: Request):
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/data-upload")
+    @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
         # Ensure /data directory exists
@@ -459,7 +457,8 @@ async def data_upload(file: UploadFile = File(...)):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-       @app.get("/verify-cookies")
+
+@app.get("/verify-cookies")
 async def verify_cookies():
     try:
         path = "/data/cookies.txt"
@@ -476,6 +475,6 @@ async def verify_cookies():
             "first_line": first_line,
             "preview": preview
         }
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
