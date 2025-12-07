@@ -427,12 +427,12 @@ async def ask_ai(request: Request):
 
         reply = response.choices[0].message.content.strip()
         return {"response": reply}
+        
 # -------------------------------
 # Data Upload Route
 # -------------------------------
 @app.post("/data-upload")
-@app.post("/data-upload")
-async def data_upload(...):
+async def data_upload(file: UploadFile = File(...)):
     try:
         # Ensure /data directory exists
         os.makedirs("/data", exist_ok=True)
