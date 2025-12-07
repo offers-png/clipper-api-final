@@ -435,9 +435,47 @@ async def ask_ai(request: Request):
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
+        # Ensure /data directory exists
+        os.makedirs("/data", exist_ok=True)
+
         dest_path = "/data/cookies.txt"
+        contents = await file.read()
+
+        # Validate not empty
+        if not contents.strip():
+            return {"ok": False, "error": "Uploaded file is empty"}
+
         with open(dest_path, "wb") as f:
-            f.write(await file.read())
+            f.write(contents)
+
+        # Double-check first few bytes for Netscape signature
+        with open(dest_path, "r", encoding="utf-8") as check:
+            first_line = check.readline()
+            if "Netscape" not in first_line:
+                return {"ok": False, "error": "Invalid cookies format. Must start with 'Netscape HTTP Cookie File'."}
+
         return {"ok": True, "path": dest_path}
+
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+       @app.get("/verify-cookies")
+async def verify_cookies():
+    try:
+        path = "/data/cookies.txt"
+        if not os.path.exists(path):
+            return {"ok": False, "error": "cookies.txt not found"}
+
+        with open(path, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+            preview = "".join(f.readlines()[:5])  # read a few lines
+
+        return {
+            "ok": True,
+            "exists": True,
+            "first_line": first_line,
+            "preview": preview
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
