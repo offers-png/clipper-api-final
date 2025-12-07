@@ -408,26 +408,24 @@ async def transcribe_audio(
                 pass
 
 
-@app.post("/ask")
+@app.post("/ask-ai")
 async def ask_ai(request: Request):
-    try:
-        body = await request.json()
-        prompt = body.get("prompt", "")
-        if not prompt:
-            return JSONResponse({"error": "Prompt is required"}, status_code=400)
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    if not prompt:
+        return JSONResponse({"error": "Prompt is required"}, status_code=400)
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are ClipForge AI assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are ClipForge AI assistant."},
+            {"role": "user", "content": prompt},
+        ],
+    )
 
-        reply = response.choices[0].message.content.strip()
+    reply = response.choices[0].message.content.strip()
     return {"response": reply}
-
 
 # -------------------------------
 # Data Upload Route
