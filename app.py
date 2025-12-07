@@ -431,7 +431,8 @@ async def ask_ai(request: Request):
 # Data Upload Route
 # -------------------------------
 @app.post("/data-upload")
-async def data_upload(file: UploadFile = File(...)):
+@app.post("/data-upload")
+async def data_upload(...):
     try:
         # Ensure /data directory exists
         os.makedirs("/data", exist_ok=True)
