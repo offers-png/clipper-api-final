@@ -158,14 +158,6 @@ def download_to_tmp(url: str) -> str:
 
     return tmp_path
 
-    else:
-        r = requests.get(url, stream=True, timeout=60)
-        if r.status_code != 200: raise RuntimeError(f"HTTP {r.status_code} while fetching URL")
-        with open(tmp_path, "wb") as f:
-            for chunk in r.iter_content(1024*1024):
-                f.write(chunk)
-    return tmp_path
-
 def make_thumbnail(source_path: str, t_start: str, out_path: str):
     # Grab a frame ~0.25s after start to avoid black frames on cuts
     seek = max(0.0, hhmmss_to_seconds(t_start) + 0.25)
