@@ -428,13 +428,8 @@ async def ask_ai(request: Request):
         reply = response.choices[0].message.content.strip()
         return {"response": reply}
 
-   # --- Previous endpoint ends cleanly here ---
-except Exception as e:
-    return JSONResponse({"error": str(e)}, status_code=500)
-
-
 # -------------------------------
-# File upload route
+# Data Upload Route
 # -------------------------------
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
@@ -468,7 +463,7 @@ async def data_upload(file: UploadFile = File(...)):
 
 
 # -------------------------------
-# Verify cookies route
+# Verify Cookies Route
 # -------------------------------
 @app.get("/verify-cookies")
 async def verify_cookies():
