@@ -443,24 +443,24 @@ async def data_upload(file: UploadFile = File(...)):
         if not contents.strip():
             return {"ok": False, "error": "Uploaded file is empty"}
 
+        # Save uploaded file
         with open(dest_path, "wb") as f:
             f.write(contents)
 
-      # Validate first line starts with Netscape cookie header
-     with open(dest_path, "rb") as f:  # read raw bytes, not UTF-8
-     first_line = f.readline().decode(errors="ignore").strip()
+        # Validate first line starts with Netscape cookie header
+        with open(dest_path, "rb") as f:  # read raw bytes
+            first_line = f.readline().decode(errors="ignore").strip()
 
-     if "Netscape" not in first_line:
-     return {
-        "ok": False,
-        "error": "Invalid cookies format. Must start with '# Netscape HTTP Cookie File'.",
-    }
+        if "Netscape" not in first_line:
+            return {
+                "ok": False,
+                "error": "Invalid cookies format. Must start with '# Netscape HTTP Cookie File'."
+            }
 
         return {"ok": True, "path": dest_path}
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
 
 # -------------------------------
 # Verify Cookies Route
