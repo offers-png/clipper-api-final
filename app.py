@@ -143,20 +143,21 @@ def download_to_tmp(url: str) -> str:
             url
         ], timeout=900)
     else:
-        # Normal direct download (no cookies)
-        code, err = run([
-            "yt-dlp",
-            "-f", "mp4",
-            "-o", tmp_path,
-            "--no-playlist",
-            "--force-overwrites",
-            url
-        ], timeout=900)
+        # Regular direct download (no cookies used)
+        r = requests.get(url, stream=True, timeout=60)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code} while fetching URL")
+        with open(tmp_path, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                f.write(chunk)
+        code = 0
+        err = ""
 
     if code != 0 or not os.path.exists(tmp_path):
         raise RuntimeError(f"yt-dlp failed: {err[:500]}")
 
     return tmp_path
+
     else:
         r = requests.get(url, stream=True, timeout=60)
         if r.status_code != 200: raise RuntimeError(f"HTTP {r.status_code} while fetching URL")
