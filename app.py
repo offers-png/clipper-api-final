@@ -433,22 +433,18 @@ async def ask_ai(request: Request):
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
-        # Ensure /data directory exists
-        os.makedirs("/data", exist_ok=True)
-
         dest_path = "/data/cookies.txt"
         contents = await file.read()
 
-        # Validate not empty
         if not contents.strip():
             return {"ok": False, "error": "Uploaded file is empty"}
 
-        # Save uploaded file
+        # Save raw file bytes
         with open(dest_path, "wb") as f:
             f.write(contents)
 
-        # Validate first line starts with Netscape cookie header
-        with open(dest_path, "rb") as f:  # read raw bytes
+        # Validate first line
+        with open(dest_path, "rb") as f:
             first_line = f.readline().decode(errors="ignore").strip()
 
         if "Netscape" not in first_line:
@@ -458,30 +454,6 @@ async def data_upload(file: UploadFile = File(...)):
             }
 
         return {"ok": True, "path": dest_path}
-
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-# -------------------------------
-# Verify Cookies Route
-# -------------------------------
-@app.get("/verify-cookies")
-async def verify_cookies():
-    try:
-        path = "/data/cookies.txt"
-        if not os.path.exists(path):
-            return {"ok": False, "error": "cookies.txt not found"}
-
-        with open(path, "r", encoding="utf-8") as f:
-            first_line = f.readline().strip()
-            preview = "".join(f.readlines()[:5])  # read a few lines
-
-        return {
-            "ok": True,
-            "exists": True,
-            "first_line": first_line,
-            "preview": preview
-        }
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
