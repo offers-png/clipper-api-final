@@ -422,6 +422,18 @@ async def ask_ai(request: Request):
                 {"role": "system", "content": "You are ClipForge AI assistant."},
                 {"role": "user", "content": prompt}
             ]
+            from fastapi import UploadFile, File
+
+@app.post("/data-upload")
+async def data_upload(file: UploadFile = File(...)):
+    try:
+        dest_path = "/data/cookies.txt"
+        with open(dest_path, "wb") as f:
+            f.write(await file.read())
+        return {"ok": True, "path": dest_path}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
         )
         reply = response.choices[0].message.content.strip()
         return {"response": reply}
