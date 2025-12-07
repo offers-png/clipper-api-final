@@ -127,18 +127,21 @@ def abs_url(request: Request, path: Optional[str]) -> Optional[str]:
 def download_to_tmp(url: str) -> str:
     tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
     u = (url or "").lower()
-    if any(k in u for k in [
-        "youtube","youtu.be","tiktok.com","instagram.com","facebook.com","x.com","twitter.com","soundcloud.com","vimeo.com"
-    ]):
-        code, err = run([
-    "yt-dlp",
-    "--cookies", "/data/cookies.txt",
-    "-f", "mp4",
-    "-o", tmp_path,
-    "--no-playlist",
-    "--force-overwrites",
-    url
-], timeout=900)
+   if any(k in u for k in [
+    "youtube", "youtu.be", "tiktok.com", "instagram.com",
+    "facebook.com", "x.com", "twitter.com", "soundcloud.com", "vimeo.com"
+]):
+    # ✅ Use cookies.txt from /data to bypass bot check
+    code, err = run([
+        "yt-dlp",
+        "--cookies", "/data/cookies.txt",
+        "-f", "mp4",
+        "-o", tmp_path,
+        "--no-playlist",
+        "--force-overwrites",
+        url
+    ], timeout=900)
+
         if code != 0 or not os.path.exists(tmp_path):
             raise RuntimeError(f"yt-dlp failed: {err[:500]}")
     else:
