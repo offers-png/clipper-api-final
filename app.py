@@ -5,8 +5,8 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 from zipfile import ZipFile
 
-from fastapi import FastAPI, UploadFile, File, Form, Request   # ✅ All FastAPI imports here
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import FastAPI, Request, UploadFile, File
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -423,7 +423,6 @@ async def ask_ai(request: Request):
                 {"role": "system", "content": "You are ClipForge AI assistant."},
                 {"role": "user", "content": prompt}
             ]
-            from fastapi import UploadFile, File
 
 @app.post("/ask")
 async def ask_ai(request: Request):
