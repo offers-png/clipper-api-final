@@ -444,7 +444,6 @@ async def ask_ai(request: Request):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
