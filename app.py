@@ -427,7 +427,6 @@ async def ask_ai(request: Request):
 
         reply = response.choices[0].message.content.strip()
         return {"response": reply}
-
 # -------------------------------
 # Data Upload Route
 # -------------------------------
