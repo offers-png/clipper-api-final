@@ -446,14 +446,15 @@ async def data_upload(file: UploadFile = File(...)):
         with open(dest_path, "wb") as f:
             f.write(contents)
 
-        # Double-check first few bytes for Netscape signature
-        with open(dest_path, "r", encoding="utf-8") as check:
-            first_line = check.readline()
-            if "Netscape" not in first_line:
-                return {
-                    "ok": False,
-                    "error": "Invalid cookies format. Must start with 'Netscape HTTP Cookie File'."
-                }
+       # Validate first line starts with Netscape cookie header
+with open(dest_path, "rb") as f:  # read raw bytes, not UTF-8
+    first_line = f.readline().decode(errors="ignore").strip()
+
+if "Netscape" not in first_line:
+    return {
+        "ok": False,
+        "error": "Invalid cookies format. Must start with '# Netscape HTTP Cookie File'.",
+    }
 
         return {"ok": True, "path": dest_path}
 
