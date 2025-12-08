@@ -463,7 +463,7 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
 # ======================================
-# AI CHAT ENDPOINT (FINAL + CLEAN)
+# AI CHAT ENDPOINT (FINAL + WORKING)
 # ======================================
 
 from openai import OpenAI
@@ -472,32 +472,41 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
     form = await request.form()
+
     user_message = form.get("user_message", "")
     transcript = form.get("transcript", "")
     history_json = form.get("history", "[]")
 
-    # Parse history safely
+    # Parse chat history safely
     try:
         history = json.loads(history_json)
     except:
         history = []
 
-    # Build conversation messages
-    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    # Build messages array
+    messages = []
 
-    # Include transcript for context
+    # Add transcript context first
     if transcript:
-        messages.insert(0, {"role": "system", "content": f"Transcript:\n{transcript}"})
+        messages.append({
+            "role": "system",
+            "content": f"Transcript:\n{transcript}"
+        })
+
+    # Add previous messages
+    for m in history:
+        messages.append({"role": m["role"], "content": m["content"]})
 
     # Add new user message
     messages.append({"role": "user", "content": user_message})
 
-    # Call OpenAI
+    # OpenAI API call (correct format)
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages
     )
 
-    reply_text = completion.choices[0].message["content"]
+    # Correct extraction for new API
+    reply_text = completion.choices[0].message.content
 
     return {"ok": True, "reply": reply_text}
