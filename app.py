@@ -462,13 +462,12 @@ async def data_upload(file: UploadFile = File(...)):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+# ======================================
+# AI CHAT ENDPOINT (FINAL + CLEAN)
+# ======================================
 
-# -------------------------------------------
-# AI CHAT ENDPOINT (CORRECTED, CLEAN)
-# -------------------------------------------
 from openai import OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
-
 
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
@@ -483,8 +482,14 @@ async def ai_chat(request: Request):
     except:
         history = []
 
-    # Build message history
+    # Build conversation messages
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    # Include transcript for context
+    if transcript:
+        messages.insert(0, {"role": "system", "content": f"Transcript:\n{transcript}"})
+
+    # Add new user message
     messages.append({"role": "user", "content": user_message})
 
     # Call OpenAI
