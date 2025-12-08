@@ -467,63 +467,36 @@ async def data_upload(file: UploadFile = File(...)):
     # ---------- AI chat endpoint ----------
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
-    """
-    Chat helper for the right-side AI panel.
-    Expects multipart/form-data with:
-      - user_message
-      - transcript (optional)
-      - history (optional JSON array of {role, content})
-    """
     try:
         form = await request.form()
-        user_message = (form.get("user_message") or "").strip()
-        transcript = form.get("transcript") or ""
-        history_raw = form.get("history") or "[]"
+        user_message = form.get("user_message", "")
+        transcript = form.get("transcript", "")
+        history_json = form.get("history", "[]")
 
-        # Parse history safely
         try:
-            history = json.loads(history_raw)
-        except Exception:
+            history = json.loads(history_json)
+        except:
             history = []
 
-        # Build messages for the model
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are ClipForge AI. You help video creators with titles, "
-                    "hooks, summaries, hashtags and timestamps using the given transcript."
-                ),
-            },
-        ]
-
-        if transcript:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": f"Here is the transcript:\n{transcript[:6000]}",
-                }
-            )
+        messages = [{"role": "system", "content": "You are ClipForge AI. Be concise and helpful."}]
 
         for m in history:
-            role = "assistant" if m.get("role") == "assistant" else "user"
-            content = m.get("content") or ""
-            if content:
-                messages.append({"role": role, "content": content})
+            if "role" in m and "content" in m:
+                messages.append({"role": m["role"], "content": m["content"]})
 
-        if user_message:
-            messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "user", "content": f"User message: {user_message} \n\nTranscript: {transcript}"})
 
-        # Call OpenAI (reuse your existing client)
-        chat = await client.chat.completions.create(
+
+        # ---------- NEW OPENAI CLIENT FORMAT ----------
+        completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.7,
+            max_tokens=300
         )
 
-        reply = chat.choices[0].message.content.strip()
-        return {"ok": True, "reply": reply}
+        reply = completion.choices[0].message["content"]
+
+        return JSONResponse({"ok": True, "reply": reply})
 
     except Exception as e:
-        print("ai_chat error:", e)
-        return {"ok": False, "error": str(e)}
+        return JSONResponse({"ok": False, "error": str(e)})
