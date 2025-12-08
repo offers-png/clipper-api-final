@@ -465,7 +465,7 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
     # ---------- AI chat endpoint ----------
-from openai import OpenAI
+   from openai import OpenAI
 client = OpenAI()
 
 @app.post("/ai_chat")
@@ -480,10 +480,7 @@ async def ai_chat(request: Request):
     except:
         history = []
 
-    # Convert history into OpenAI chat format
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
-
-    # Append the new user message
     messages.append({"role": "user", "content": user_message})
 
     completion = client.chat.completions.create(
@@ -491,7 +488,6 @@ async def ai_chat(request: Request):
         messages=messages
     )
 
-    # 🔥 Correct new syntax
     reply_text = completion.choices[0].message.content
 
     return {"ok": True, "reply": reply_text}
