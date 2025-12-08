@@ -465,7 +465,8 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
     # ---------- AI chat endpoint ----------
-   from openai import OpenAI
+  # ----------- AI chat endpoint -----------
+from openai import OpenAI
 client = OpenAI()
 
 @app.post("/ai_chat")
@@ -475,19 +476,25 @@ async def ai_chat(request: Request):
     transcript = form.get("transcript", "")
     history_json = form.get("history", "[]")
 
+    # Parse history safely
     try:
         history = json.loads(history_json)
     except:
         history = []
 
+    # Convert history into OpenAI format
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    # Add user message
     messages.append({"role": "user", "content": user_message})
 
+    # Call OpenAI API
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages
     )
 
-    reply_text = completion.choices[0].message.content
+    # FIX: correct extraction for new API format
+    reply_text = completion.choices[0].message['content']
 
     return {"ok": True, "reply": reply_text}
