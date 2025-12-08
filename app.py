@@ -463,3 +463,26 @@ async def data_upload(file: UploadFile = File(...)):
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
+        @app.post("/ai_chat")
+async def ai_chat(request: Request):
+    form = await request.form()
+    user_message = form.get("user_message", "")
+    transcript = form.get("transcript", "")
+    history_raw = form.get("history", "[]")
+
+    try:
+        history = json.loads(history_raw)
+    except:
+        history = []
+
+    messages = [{"role": "system", "content": "You are ClipForge AI. Helpful, short answers."}]
+    messages += history
+    messages.append({"role": "user", "content": f"{user_message}\n\nTranscript:\n{transcript}"})
+
+    reply = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
+    )
+
+    return {"ok": True, "reply": reply.choices[0].message.content}
+
