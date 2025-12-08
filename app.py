@@ -463,6 +463,55 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
 # ======================================
+# TRANSCRIBE CLIPPED VIDEO (FAST + NO TIMEOUTS)
+# ======================================
+
+@app.post("/transcribe_clip")
+async def transcribe_clip(request: Request):
+    form = await request.form()
+    clip_url = form.get("clip_url", "")
+
+    if not clip_url:
+        return {"ok": False, "error": "clip_url is required"}
+
+    # Extract filename from URL
+    filename = clip_url.split("/")[-1]
+    clip_path = f"/data/exports/{filename}"
+
+    if not os.path.exists(clip_path):
+        return {"ok": False, "error": f"Clip not found on server: {clip_path}"}
+
+    # Convert clip to mp3
+    mp3_path = clip_path.replace(".mp4", ".mp3")
+    code, err = run([
+        "ffmpeg", "-y", "-i", clip_path,
+        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+        mp3_path
+    ], timeout=60)
+
+    if code != 0 or not os.path.exists(mp3_path):
+        return {"ok": False, "error": f"FFmpeg failed: {err}"}
+
+    # Whisper transcription
+    with open(mp3_path, "rb") as a:
+        tr = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=a,
+            response_format="text"
+        )
+
+    text = tr.strip() if isinstance(tr, str) else str(tr)
+
+    # Cleanup small mp3
+    try:
+        os.remove(mp3_path)
+    except:
+        pass
+
+    return {"ok": True, "text": text}
+
+
+# ======================================
 # AI CHAT ENDPOINT (FINAL + WORKING)
 # ======================================
 
