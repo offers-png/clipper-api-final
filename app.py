@@ -462,6 +462,25 @@ async def data_upload(file: UploadFile = File(...)):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def resolve_local_media_path(url: str):
+    """
+    If the URL points to our own /media/... storage, convert it to a direct filesystem path.
+    """
+    if not url:
+        return None
+
+    for prefix, folder in [
+        ("/media/previews/", PREVIEW_DIR),
+        ("/media/exports/", EXPORT_DIR),
+        ("/media/thumbs/", THUMB_DIR),
+    ]:
+        if prefix in url:
+            filename = url.split(prefix)[-1]
+            return os.path.join(folder, filename)
+
+    return None
+
+
 # ======================================
 # TRANSCRIBE CLIPPED VIDEO (FAST + NO TIMEOUTS)
 # ======================================
