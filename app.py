@@ -465,7 +465,6 @@ async def data_upload(file: UploadFile = File(...)):
         return {"ok": False, "error": str(e)}
 
     # ---------- AI chat endpoint ----------
-  # ----------- AI chat endpoint -----------
 from openai import OpenAI
 client = OpenAI()
 
