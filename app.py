@@ -445,11 +445,9 @@ async def data_upload(file: UploadFile = File(...)):
         if not contents.strip():
             return {"ok": False, "error": "Uploaded file is empty"}
 
-        # Save raw file bytes
         with open(dest_path, "wb") as f:
             f.write(contents)
 
-        # Validate first line
         with open(dest_path, "rb") as f:
             first_line = f.readline().decode(errors="ignore").strip()
 
@@ -464,9 +462,13 @@ async def data_upload(file: UploadFile = File(...)):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-    # ---------- AI chat endpoint ----------
+
+# -------------------------------------------
+# AI CHAT ENDPOINT (CORRECTED, CLEAN)
+# -------------------------------------------
 from openai import OpenAI
-client = OpenAI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+
 
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
@@ -481,19 +483,16 @@ async def ai_chat(request: Request):
     except:
         history = []
 
-    # Convert history into OpenAI format
+    # Build message history
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
-
-    # Add user message
     messages.append({"role": "user", "content": user_message})
 
-    # Call OpenAI API
+    # Call OpenAI
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages
     )
 
-    # FIX: correct extraction for new API format
-    reply_text = completion.choices[0].message['content']
+    reply_text = completion.choices[0].message["content"]
 
     return {"ok": True, "reply": reply_text}
