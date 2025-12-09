@@ -348,13 +348,13 @@ async def transcribe_clip(request: Request):
     if not clip_url:
         return {"ok": False, "error": "clip_url is required"}
 
-    - filename = clip_url.split("/")[-1]
-- clip_path = f"/data/exports/{filename}"
+     filename = clip_url.split("/")[-1]
+     clip_path = f"/data/exports/{filename}"
 
 - if not os.path.exists(clip_path):
 -     return {"ok": False, "error": f"Clip not found on server: {clip_path}"}
 
-+ filename = clip_url.split("/")[-1]
+ filename = clip_url.split("/")[-1]
 
 + # Detect if preview or final
 + preview_path = f"/data/previews/{filename}"
