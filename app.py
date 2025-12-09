@@ -348,25 +348,20 @@ async def transcribe_clip(request: Request):
     if not clip_url:
         return {"ok": False, "error": "clip_url is required"}
 
-     filename = clip_url.split("/")[-1]
-     clip_path = f"/data/exports/{filename}"
+    # Extract filename
+    filename = clip_url.split("/")[-1]
 
-- if not os.path.exists(clip_path):
--     return {"ok": False, "error": f"Clip not found on server: {clip_path}"}
+    # Build possible paths
+    preview_path = f"/data/previews/{filename}"
+    final_path   = f"/data/exports/{filename}"
 
- filename = clip_url.split("/")[-1]
-
-+ # Detect if preview or final
-+ preview_path = f"/data/previews/{filename}"
-+ final_path   = f"/data/exports/{filename}"
-
-+ if os.path.exists(final_path):
-+     clip_path = final_path
-+ elif os.path.exists(preview_path):
-+     clip_path = preview_path
-+ else:
-+     return {"ok": False, "error": f"Clip not found on server: {filename}"}
-
+    # Decide which file exists
+    if os.path.exists(final_path):
+        clip_path = final_path
+    elif os.path.exists(preview_path):
+        clip_path = preview_path
+    else:
+        return {"ok": False, "error": f"Clip not found on server: {filename}"}
 
     # Convert to mp3
     mp3_path = clip_path.replace(".mp4", ".mp3")
@@ -379,7 +374,7 @@ async def transcribe_clip(request: Request):
     if code != 0 or not os.path.exists(mp3_path):
         return {"ok": False, "error": f"FFmpeg failed: {err}"}
 
-    # Whisper transcription
+    # Transcribe with Whisper
     with open(mp3_path, "rb") as a:
         tr = client.audio.transcriptions.create(
             model="whisper-1",
@@ -395,7 +390,6 @@ async def transcribe_clip(request: Request):
         pass
 
     return {"ok": True, "text": text}
-
 
 
 @app.post("/ask-ai")
