@@ -337,75 +337,150 @@ async def clip_multi(
             if tmp and os.path.exists(tmp): os.remove(tmp)
         except Exception: pass
 
-@app.post("/transcribe")
-async def transcribe_audio(
-    url: str = Form(None),
-    file: UploadFile = File(None),
-    user_email: str = Form("guest@clipforge.app"),
-):
-    if not client:
-        return JSONResponse({"ok": False, "error": "OPENAI_API_KEY missing"}, 500)
+--- a/app.py
++++ b/app.py
+@@ -357,6 +357,7 @@
+ # ======================================
+ # TRANSCRIBE CLIPPED VIDEO (FAST + NO TIMEOUTS)
+ # ======================================
 
-    tmp_path = None
-    audio_mp3 = None
-    try:
-        if file:
-            suffix = os.path.splitext(file.filename)[1] or ".webm"
-            tmp_path = os.path.join(TMP_DIR, f"upl_{nowstamp()}{suffix}")
-            with open(tmp_path, "wb") as f:
-                f.write(await file.read())
-        elif url:
-            base = os.path.join(TMP_DIR, f"audio_{nowstamp()}")
-            code, err = run([
-                "yt-dlp","--no-playlist","-x","--audio-format","mp3","--audio-quality","192K",
-                "-o", base + ".%(ext)s","--force-overwrites", url
-            ], timeout=900)
-            mp3_candidate = base + ".mp3"
-            if code == 0 and os.path.exists(mp3_candidate):
-                audio_mp3 = mp3_candidate
-            else:
-                tmp_path = download_to_tmp(url)
-        else:
-            return JSONResponse({"ok": False, "error": "No file or URL provided."}, 400)
++### REMOVE ORIGINAL /transcribe HERE AND REPLACE WITH PATCHED VERSION ###
 
-        if not audio_mp3:
-            audio_mp3 = (tmp_path.rsplit(".",1)[0] + ".mp3")
-            code, err = run(["ffmpeg","-y","-i",tmp_path,"-vn","-acodec","libmp3lame","-b:a","192k",audio_mp3], timeout=900)
-            if code != 0 or not os.path.exists(audio_mp3):
-                return JSONResponse({"ok": False, "error": f"FFmpeg audio convert failed: {err}."}, 500)
+@@ -445,40 +446,79 @@
+-@app.post("/transcribe")
+-async def transcribe_audio(
+-    url: str = Form(None),
+-    file: UploadFile = File(None),
+-    user_email: str = Form("guest@clipforge.app"),
+-):
+-    if not client:
+-        return JSONResponse({"ok": False, "error": "OPENAI_API_KEY missing"}, 500)
+-
+-    tmp_path = None
+-    audio_mp3 = None
+-    try:
+-        if file:
+-            suffix = os.path.splitext(file.filename)[1] or ".webm"
+-            tmp_path = os.path.join(TMP_DIR, f"upl_{nowstamp()}{suffix}")
+-            with open(tmp_path, "wb") as f:
+-                f.write(await file.read())
+-        elif url:
+-            base = os.path.join(TMP_DIR, f"audio_{nowstamp()}")
+-            code, err = run([
+-                "yt-dlp","--no-playlist","-x","--audio-format","mp3","--audio-quality","192K",
+-                "-o", base + ".%(ext)s","--force-overwrites", url
+-            ], timeout=900)
+-            mp3_candidate = base + ".mp3"
+-            if code == 0 and os.path.exists(mp3_candidate):
+-                audio_mp3 = mp3_candidate
+-            else:
+-                tmp_path = download_to_tmp(url)
+-        else:
+-            return JSONResponse({"ok": False, "error": "No file or URL provided."}, 400)
+-
+-        if not audio_mp3:
+-            audio_mp3 = (tmp_path.rsplit(".",1)[0] + ".mp3")
+-            code, err = run(["ffmpeg","-y","-i",tmp_path,"-vn","-acodec","libmp3lame","-b:a","192k",audio_mp3], timeout=900)
+-            if code != 0 or not os.path.exists(audio_mp3):
+-                return JSONResponse({"ok": False, "error": f"FFmpeg audio convert failed: {err}."}, 500)
+-
+-        with open(audio_mp3, "rb") as a:
+-            tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
+-        text_output = tr.strip() if isinstance(tr, str) else str(tr) or "(no text)"
+-
+-        if (sbc := sb()):
+-            try:
+-                sbc.table(SUPABASE_TABLE).insert({
+-                    "user_email": user_email,
+-                    SUPABASE_TEXT_COL_PRIMARY: text_output,
+-                    "created_at": datetime.utcnow().isoformat()
+-                }).execute()
+-            except Exception as e1:
+-                try:
+-                    sbc.table(SUPABASE_TABLE).insert({
+-                        "user_email": user_email,
+-                        SUPABASE_TEXT_COL_ALT: text_output,
+-                        "created_at": datetime.utcnow().isoformat()
+-                    }).execute()
+-                except Exception as e2:
+-                    print("⚠️ Supabase insert failed; skipping.", e1, "/", e2)
+-
+-        return JSONResponse({"ok": True, "text": text_output})
+-    except Exception as e:
+-        print("❌ /transcribe error:", e)
+-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+-    finally:
+-        for p in (tmp_path, audio_mp3):
+-            try:
+-                if p and os.path.exists(p):
+-                    os.remove(p)
+-            except Exception:
+-                pass
 
-        with open(audio_mp3, "rb") as a:
-            tr = client.audio.transcriptions.create(model="whisper-1", file=a, response_format="text")
-        text_output = tr.strip() if isinstance(tr, str) else str(tr) or "(no text)"
 
-        if (sbc := sb()):
-            try:
-                sbc.table(SUPABASE_TABLE).insert({
-                    "user_email": user_email,
-                    SUPABASE_TEXT_COL_PRIMARY: text_output,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
-            except Exception as e1:
-                try:
-                    sbc.table(SUPABASE_TABLE).insert({
-                        "user_email": user_email,
-                        SUPABASE_TEXT_COL_ALT: text_output,
-                        "created_at": datetime.utcnow().isoformat()
-                    }).execute()
-                except Exception as e2:
-                    print("⚠️ Supabase insert failed; skipping.", e1, "/", e2)
++###########################################################
++# NEW /transcribe ENDPOINT (PATCHED – NO TIMEOUTS)
++###########################################################
++@app.post("/transcribe")
++async def patched_transcribe(request: Request):
++    form = await request.form()
++    url  = form.get("url")
++    file = form.get("file")
++
++    if not client:
++        return {"ok": False, "error": "Missing OPENAI_API_KEY"}
++
++    tmp_path = None
++    mp3_path = None
++    try:
++        # ========== CASE 1: FILE UPLOAD ==========
++        upload = request.files.get("file")
++        if upload:
++            suffix = os.path.splitext(upload.filename)[1] or ".mp4"
++            tmp_path = os.path.join(TMP_DIR, f"upl_{nowstamp()}{suffix}")
++            with open(tmp_path, "wb") as f:
++                f.write(await upload.read())
++
++        # ========== CASE 2: URL ==========
++        elif url:
++            tmp_path = download_to_tmp(url)
++
++        else:
++            return {"ok": False, "error": "No file or URL provided."}
++
++        # Extract audio → mp3 fast
++        mp3_path = tmp_path.replace(".mp4", ".mp3")
++        code, err = run([
++            "ffmpeg", "-y", "-i", tmp_path,
++            "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
++            mp3_path
++        ], timeout=90)
++
++        if code != 0 or not os.path.exists(mp3_path):
++            return {"ok": False, "error": "FFmpeg audio extraction failed"}
++
++        # Whisper transcription
++        with open(mp3_path, "rb") as a:
++            tr = client.audio.transcriptions.create(
++                model="whisper-1",
++                file=a,
++                response_format="text"
++            )
++
++        text = tr.strip() if isinstance(tr, str) else str(tr)
++        return {"ok": True, "text": text}
++
++    except Exception as e:
++        return {"ok": False, "error": str(e)}
++
++    finally:
++        for p in (tmp_path, mp3_path):
++            try:
++                if p and os.path.exists(p):
++                    os.remove(p)
++            except:
++                pass
 
-                return JSONResponse({"ok": True, "text": text_output})
-    except Exception as e:
-        print("❌ /transcribe error:", e)
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    finally:
-        for p in (tmp_path, audio_mp3):
-            try:
-                if p and os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
 
 
 @app.post("/ask-ai")
