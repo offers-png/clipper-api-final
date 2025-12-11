@@ -47,12 +47,14 @@ app.mount("/media/thumbs",   StaticFiles(directory=THUMB_DIR),   name="thumbs")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://clipper-frontend.onrender.com",
-        "https://ptsel-frontend.onrender.com",
-        "https://clipper-api-final-1.onrender.com",
-        "http://localhost:5173",
-    ],
+    ALLOWED_ORIGINS = [
+    "https://clipper-frontend.onrender.com",
+    "https://ptsel-frontend.onrender.com",
+    "https://clipper-api-final-1.onrender.com",
+    "http://localhost:5173",
+    "capacitor://localhost",
+    "http://localhost"
+],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
