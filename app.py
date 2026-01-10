@@ -331,6 +331,17 @@ async def clip_multi(
                             z.write(final_fp, arcname=os.path.basename(final_fp))
             zip_url = abs_url(request, f"/media/exports/{zip_name}")
 
+        s = sb()
+if s:
+    for r in results:
+        s.table("history").insert({
+            "user_id": request.headers.get("x-user-id", "anonymous"),
+            "job_type": "clip",
+            "source_name": os.path.basename(src),
+            "preview_url": r.get("preview_url"),
+            "final_url": r.get("final_url")
+        }).execute()
+
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
@@ -446,6 +457,15 @@ async def transcribe(request: Request, file: UploadFile = File(None), url: str =
             os.remove(mp3_path)
         except:
             pass
+
+        s = sb()
+if s:
+    s.table("history").insert({
+        "user_id": request.headers.get("x-user-id", "anonymous"),
+        "job_type": "transcript",
+        "source_name": filename,
+        "transcript": text
+    }).execute()
 
         return {"ok": True, "text": text}
 
