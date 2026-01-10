@@ -458,7 +458,7 @@ async def transcribe(request: Request, file: UploadFile = File(None), url: str =
         except:
             pass
 
-        s = sb()
+s = sb()
 if s:
     s.table("history").insert({
         "user_id": request.headers.get("x-user-id", "anonymous"),
@@ -467,7 +467,8 @@ if s:
         "transcript": text
     }).execute()
 
-        return {"ok": True, "text": text}
+return {"ok": True, "text": text}
+
 
     # 3) If a URL is provided, download then transcribe (future-proof)
     if url:
