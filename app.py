@@ -393,6 +393,56 @@ async def transcribe_clip(request: Request):
 
     return {"ok": True, "text": text}
 
+async def transcribe_url(request: Request, url: str):
+    tmp = None
+    src = None
+    mp3_path = None
+
+    try:
+        # download
+        tmp = download_to_tmp(url)
+        filename = safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4")
+        src = os.path.join(UPLOAD_DIR, filename)
+        shutil.copy(tmp, src)
+
+        # convert to mp3
+        mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+        code, err = run([
+            "ffmpeg", "-y", "-i", src,
+            "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+            mp3_path
+        ], timeout=120)
+
+        if code != 0 or not os.path.exists(mp3_path):
+            return {"ok": False, "error": f"ffmpeg failed: {err}"}
+
+        # whisper
+        with open(mp3_path, "rb") as a:
+            tr = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=a,
+                response_format="text"
+            )
+
+        text = tr.strip() if isinstance(tr, str) else str(tr)
+
+        # history (non-blocking)
+        try:
+            s = sb()
+            if s:
+                s.table("history").insert({
+                    "user_id": request.headers.get("x-user-id", "anonymous"),
+                    "job_type": "transcript",
+                    "source_name": filename,
+                    "transcript": text
+                }).execute()
+        except:
+            pass
+
+        return {"ok": True, "text": text}
+
+    finally:
+        for p in [t]()
 
 
 @app.post("/transcribe")
@@ -412,6 +462,9 @@ async def transcribe(
     # 1) Preferred: transcribe an existing clip
     if clip_url:
         return await transcribe_clip(request)
+      # 2) URL transcription
+if url:
+    return await transcribe_url(request, url)
 
     # 2) Upload file path
     src = None
