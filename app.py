@@ -469,33 +469,6 @@ if s:
 
 return {"ok": True, "text": text}
 
-# 3) If a URL is provided, download then transcribe (future-proof)
-if url:
-    tmp = None
-    try:
-        tmp = download_to_tmp(url)
-        src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
-        shutil.copy(tmp, src)
-        ...
-          mp3_path = src.rsplit(".", 1)[0] + ".mp3"
-            code, err = run([
-                "ffmpeg", "-y", "-i", src,
-                "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-                mp3_path
-            ], timeout=120)
-
-            if code != 0 or not os.path.exists(mp3_path):
-                return {"ok": False, "error": f"FFmpeg failed: {err}"}
-
-            with open(mp3_path, "rb") as a:
-                tr = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=a,
-                    response_format="text"
-                )
-
-            text = tr.strip() if isinstance(tr, str) else str(tr)
-
             try:
                 os.remove(mp3_path)
             except:
