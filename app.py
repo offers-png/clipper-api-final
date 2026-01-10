@@ -405,85 +405,11 @@ async def transcribe_clip(request: Request):
     return {"ok": True, "text": text}
 
 @app.post("/transcribe")
-async def transcribe(request: Request, file: UploadFile = File(None), url: str = Form(None), clip_url: str = Form(None)):
-    """
-    Permanent compatibility endpoint.
-    Frontend may call /transcribe from older UI paths.
-    This endpoint supports:
-      - clip_url (preferred) -> uses existing /transcribe_clip logic
-      - file or url -> optional future-proofing (will create a temp clip and transcribe)
-    """
+async def transcribe(request: Request, clip_url: str = Form(None)):
+    if not clip_url:
+        return {"ok": False, "error": "clip_url required"}
 
-    # 1) If clip_url is provided, just reuse the existing proven path
-    if clip_url:
-        # Rebuild a form-like request for the existing handler
-        form = await request.form()
-        # Ensure the key exists (some clients send it differently)
-        if not form.get("clip_url"):
-            # fallback: use provided clip_url argument
-            # FastAPI form parsing already gave us clip_url; we just call transcribe_clip directly by spoofing form data
-            pass
-        return await transcribe_clip(request)
-
-    # 2) If a file is provided, save it and transcribe it (no clipping needed)
-    if file is not None:
-        src = os.path.join(UPLOAD_DIR, safe(file.filename))
-        with open(src, "wb") as f:
-            f.write(await file.read())
-
-        # Convert to mp3
-        mp3_path = src.rsplit(".", 1)[0] + ".mp3"
-        code, err = run([
-            "ffmpeg", "-y", "-i", src,
-            "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-            mp3_path
-        ], timeout=120)
-
-        if code != 0 or not os.path.exists(mp3_path):
-            return {"ok": False, "error": f"FFmpeg failed: {err}"}
-
-        # Whisper transcription
-        with open(mp3_path, "rb") as a:
-            tr = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=a,
-                response_format="text"
-            )
-
-        text = tr.strip() if isinstance(tr, str) else str(tr)
-
-        # Cleanup
-        try:
-            os.remove(mp3_path)
-        except:
-            pass
-
-s = sb()
-if s:
-    s.table("history").insert({
-        "user_id": request.headers.get("x-user-id", "anonymous"),
-        "job_type": "transcript",
-        "source_name": filename,
-        "transcript": text
-    }).execute()
-
-return {"ok": True, "text": text}
-
-            try:
-                os.remove(mp3_path)
-            except:
-                pass
-
-            return {"ok": True, "text": text}
-        finally:
-            try:
-                if tmp and os.path.exists(tmp):
-                    os.remove(tmp)
-            except:
-                pass
-
-    return {"ok": False, "error": "Provide clip_url or file or url."}
-
+    return await transcribe_clip(request)
 
 
 @app.post("/ask-ai")
