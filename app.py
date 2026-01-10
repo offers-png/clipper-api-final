@@ -532,7 +532,7 @@ async def transcribe(
         pass
 
     return {"ok": True, "text": text}
-}
+
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
