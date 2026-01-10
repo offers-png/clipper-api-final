@@ -477,9 +477,7 @@ if url:
         src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
         shutil.copy(tmp, src)
         ...
-
-
-            mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+          mp3_path = src.rsplit(".", 1)[0] + ".mp3"
             code, err = run([
                 "ffmpeg", "-y", "-i", src,
                 "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
