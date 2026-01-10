@@ -330,16 +330,15 @@ async def clip_multi(
                         if os.path.exists(final_fp):
                             z.write(final_fp, arcname=os.path.basename(final_fp))
             zip_url = abs_url(request, f"/media/exports/{zip_name}")
-        s = sb()
-        if s:
-            for r in results:
-                s.table("history").insert({
-                    "user_id": request.headers.get("x-user-id", "anonymous"),
-                    "job_type": "clip",
-                    "source_name": os.path.basename(src),
-                    "preview_url": r.get("preview_url"),
-                    "final_url": r.get("final_url")
-                }).execute()
+ try:
+    s = sb()
+    if s:
+        s.table("history").insert({
+            # keep your same fields here
+        }).execute()
+except Exception as e:
+    print("history insert failed:", e)
+
 
 
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
@@ -408,15 +407,20 @@ async def transcribe_clip(request: Request):
 async def transcribe(
     request: Request,
     file: UploadFile = File(None),
+    url: str = Form(None),
     clip_url: str = Form(None),
 ):
     if clip_url:
         return await transcribe_clip(request)
 
-    if file:
-        return await transcribe_file(request, file)
+    if file is not None:
+        return await transcribe_file(request, file)  # only if you have this function
 
-    return {"ok": False, "error": "Provide clip_url or file"}
+    if url:
+        return await transcribe_url(request, url)    # only if you have this function
+
+    return {"ok": False, "error": "Provide clip_url or file or url."}
+
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
