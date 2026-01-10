@@ -330,17 +330,17 @@ async def clip_multi(
                         if os.path.exists(final_fp):
                             z.write(final_fp, arcname=os.path.basename(final_fp))
             zip_url = abs_url(request, f"/media/exports/{zip_name}")
-
         s = sb()
-if s:
-    for r in results:
-        s.table("history").insert({
-            "user_id": request.headers.get("x-user-id", "anonymous"),
-            "job_type": "clip",
-            "source_name": os.path.basename(src),
-            "preview_url": r.get("preview_url"),
-            "final_url": r.get("final_url")
-        }).execute()
+        if s:
+            for r in results:
+                s.table("history").insert({
+                    "user_id": request.headers.get("x-user-id", "anonymous"),
+                    "job_type": "clip",
+                    "source_name": os.path.basename(src),
+                    "preview_url": r.get("preview_url"),
+                    "final_url": r.get("final_url")
+                }).execute()
+
 
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
     except Exception as e:
