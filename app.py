@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple
 from zipfile import ZipFile
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -397,6 +397,7 @@ async def transcribe_url(request: Request, url: str):
     tmp = None
     src = None
     mp3_path = None
+    filename = None
 
     try:
         # download
@@ -416,6 +417,9 @@ async def transcribe_url(request: Request, url: str):
         if code != 0 or not os.path.exists(mp3_path):
             return {"ok": False, "error": f"ffmpeg failed: {err}"}
 
+        if client is None:
+            return {"ok": False, "error": "OPENAI_API_KEY is not set on the server"}
+
         # whisper
         with open(mp3_path, "rb") as a:
             tr = client.audio.transcriptions.create(
@@ -426,7 +430,7 @@ async def transcribe_url(request: Request, url: str):
 
         text = tr.strip() if isinstance(tr, str) else str(tr)
 
-        # history (non-blocking)
+        # history (best-effort)
         try:
             s = sb()
             if s:
@@ -436,8 +440,21 @@ async def transcribe_url(request: Request, url: str):
                     "source_name": filename,
                     "transcript": text
                 }).execute()
-        except:
+        except Exception:
             pass
+
+        return {"ok": True, "text": text}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    finally:
+        for p in [tmp, mp3_path]:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
         return {"ok": True, "text": text}
 
@@ -459,34 +476,21 @@ async def transcribe(
     # 1) Preferred: transcribe an existing clip
     if clip_url:
         return await transcribe_clip(request)
-      # 2) URL transcription
-if url:
-    return await transcribe_url(request, url)
 
-    # 2) Upload file path
-    src = None
-    filename = None
-    if file is not None:
-        filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
-        src = os.path.join(UPLOAD_DIR, filename)
-        with open(src, "wb") as f:
-            f.write(await file.read())
+    # 2) URL transcription (use the helper)
+    if url:
+        return await transcribe_url(request, url)
 
-    # 3) URL path
-    if (src is None) and url:
-        tmp = download_to_tmp(url)
-        filename = safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4")
-        src = os.path.join(UPLOAD_DIR, filename)
-        shutil.copy(tmp, src)
-        try:
-            os.remove(tmp)
-        except:
-            pass
-
-    if src is None:
+    # 3) Upload file transcription
+    if file is None:
         return {"ok": False, "error": "Provide clip_url or file or url."}
 
-    # Convert to mp3
+    filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
+    src = os.path.join(UPLOAD_DIR, filename)
+
+    with open(src, "wb") as f:
+        f.write(await file.read())
+
     mp3_path = src.rsplit(".", 1)[0] + ".mp3"
     code, err = run([
         "ffmpeg", "-y", "-i", src,
@@ -497,36 +501,38 @@ if url:
     if code != 0 or not os.path.exists(mp3_path):
         return {"ok": False, "error": f"FFmpeg failed: {err}"}
 
-    # Whisper transcription
+    if client is None:
+        return {"ok": False, "error": "OPENAI_API_KEY is not set on the server"}
+
     with open(mp3_path, "rb") as a:
         tr = client.audio.transcriptions.create(
             model="whisper-1",
             file=a,
             response_format="text"
         )
+
     text = tr.strip() if isinstance(tr, str) else str(tr)
 
-    # Best-effort history logging (never fail the request)
+    # Best-effort history logging
     try:
         s = sb()
         if s:
             s.table("history").insert({
                 "user_id": request.headers.get("x-user-id", "anonymous"),
                 "job_type": "transcript",
-                "source_name": filename or os.path.basename(src),
+                "source_name": filename,
                 "transcript": text
             }).execute()
-    except Exception as _e:
+    except Exception:
         pass
 
-    # Cleanup
-    for p in [mp3_path]:
-        try:
-            os.remove(p)
-        except:
-            pass
+    try:
+        os.remove(mp3_path)
+    except Exception:
+        pass
 
     return {"ok": True, "text": text}
+}
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
