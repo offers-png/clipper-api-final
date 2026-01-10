@@ -393,6 +393,105 @@ async def transcribe_clip(request: Request):
 
     return {"ok": True, "text": text}
 
+@app.post("/transcribe")
+async def transcribe(request: Request, file: UploadFile = File(None), url: str = Form(None), clip_url: str = Form(None)):
+    """
+    Permanent compatibility endpoint.
+    Frontend may call /transcribe from older UI paths.
+    This endpoint supports:
+      - clip_url (preferred) -> uses existing /transcribe_clip logic
+      - file or url -> optional future-proofing (will create a temp clip and transcribe)
+    """
+
+    # 1) If clip_url is provided, just reuse the existing proven path
+    if clip_url:
+        # Rebuild a form-like request for the existing handler
+        form = await request.form()
+        # Ensure the key exists (some clients send it differently)
+        if not form.get("clip_url"):
+            # fallback: use provided clip_url argument
+            # FastAPI form parsing already gave us clip_url; we just call transcribe_clip directly by spoofing form data
+            pass
+        return await transcribe_clip(request)
+
+    # 2) If a file is provided, save it and transcribe it (no clipping needed)
+    if file is not None:
+        src = os.path.join(UPLOAD_DIR, safe(file.filename))
+        with open(src, "wb") as f:
+            f.write(await file.read())
+
+        # Convert to mp3
+        mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+        code, err = run([
+            "ffmpeg", "-y", "-i", src,
+            "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+            mp3_path
+        ], timeout=120)
+
+        if code != 0 or not os.path.exists(mp3_path):
+            return {"ok": False, "error": f"FFmpeg failed: {err}"}
+
+        # Whisper transcription
+        with open(mp3_path, "rb") as a:
+            tr = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=a,
+                response_format="text"
+            )
+
+        text = tr.strip() if isinstance(tr, str) else str(tr)
+
+        # Cleanup
+        try:
+            os.remove(mp3_path)
+        except:
+            pass
+
+        return {"ok": True, "text": text}
+
+    # 3) If a URL is provided, download then transcribe (future-proof)
+    if url:
+        tmp = None
+        try:
+            tmp = download_to_tmp(url)
+            src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
+            shutil.copy(tmp, src)
+
+            mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+            code, err = run([
+                "ffmpeg", "-y", "-i", src,
+                "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+                mp3_path
+            ], timeout=120)
+
+            if code != 0 or not os.path.exists(mp3_path):
+                return {"ok": False, "error": f"FFmpeg failed: {err}"}
+
+            with open(mp3_path, "rb") as a:
+                tr = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=a,
+                    response_format="text"
+                )
+
+            text = tr.strip() if isinstance(tr, str) else str(tr)
+
+            try:
+                os.remove(mp3_path)
+            except:
+                pass
+
+            return {"ok": True, "text": text}
+        finally:
+            try:
+                if tmp and os.path.exists(tmp):
+                    os.remove(tmp)
+            except:
+                pass
+
+    return {"ok": False, "error": "Provide clip_url or file or url."}
+
+
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
@@ -467,53 +566,6 @@ def resolve_local_media_path(url: str):
     return None
 
 
-# ======================================
-# TRANSCRIBE CLIPPED VIDEO (FAST + NO TIMEOUTS)
-# ======================================
-
-@app.post("/transcribe_clip")
-async def transcribe_clip(request: Request):
-    form = await request.form()
-    clip_url = form.get("clip_url", "")
-
-    if not clip_url:
-        return {"ok": False, "error": "clip_url is required"}
-
-    # Extract filename from URL
-    filename = clip_url.split("/")[-1]
-    clip_path = f"/data/exports/{filename}"
-
-    if not os.path.exists(clip_path):
-        return {"ok": False, "error": f"Clip not found on server: {clip_path}"}
-
-    # Convert clip to mp3
-    mp3_path = clip_path.replace(".mp4", ".mp3")
-    code, err = run([
-        "ffmpeg", "-y", "-i", clip_path,
-        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-        mp3_path
-    ], timeout=60)
-
-    if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": f"FFmpeg failed: {err}"}
-
-    # Whisper transcription
-    with open(mp3_path, "rb") as a:
-        tr = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=a,
-            response_format="text"
-        )
-
-    text = tr.strip() if isinstance(tr, str) else str(tr)
-
-    # Cleanup small mp3
-    try:
-        os.remove(mp3_path)
-    except:
-        pass
-
-    return {"ok": True, "text": text}
 
 
 # ======================================
