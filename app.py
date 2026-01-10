@@ -405,27 +405,18 @@ async def transcribe_clip(request: Request):
     return {"ok": True, "text": text}
 
 @app.post("/transcribe")
-async def transcribe(request: Request, clip_url: str = Form(None)):
-    if not clip_url:
-        return {"ok": False, "error": "clip_url required"}
-
-    return await transcribe_clip(request)
-    @app.post("/transcribe")
 async def transcribe(
     request: Request,
     file: UploadFile = File(None),
-    clip_url: str = Form(None)
+    clip_url: str = Form(None),
 ):
     if clip_url:
         return await transcribe_clip(request)
 
     if file:
-        # reuse the OLD proven file transcription path
         return await transcribe_file(request, file)
 
     return {"ok": False, "error": "Provide clip_url or file"}
-
-
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
