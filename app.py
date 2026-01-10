@@ -441,9 +441,8 @@ async def transcribe_url(request: Request, url: str):
 
         return {"ok": True, "text": text}
 
-    finally:
-        for p in (t or []):
-
+   finally:
+    pass
 
 @app.post("/transcribe")
 async def transcribe(
