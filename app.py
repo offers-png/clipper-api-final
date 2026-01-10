@@ -469,14 +469,15 @@ if s:
 
 return {"ok": True, "text": text}
 
+# 3) If a URL is provided, download then transcribe (future-proof)
+if url:
+    tmp = None
+    try:
+        tmp = download_to_tmp(url)
+        src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
+        shutil.copy(tmp, src)
+        ...
 
-    # 3) If a URL is provided, download then transcribe (future-proof)
-    if url:
-        tmp = None
-        try:
-            tmp = download_to_tmp(url)
-            src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
-            shutil.copy(tmp, src)
 
             mp3_path = src.rsplit(".", 1)[0] + ".mp3"
             code, err = run([
