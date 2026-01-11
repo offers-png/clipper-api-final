@@ -467,12 +467,12 @@ async def transcribe(
     clip_url: str = Form(None),
 ):
     # 1) Preferred: transcribe an existing clip
-if clip_url:
-    return await transcribe_clip(request)
+    if clip_url:
+        return await transcribe_clip(request)
 
-# 2) URL transcription
-if url:
-    return await transcribe_url(request, url)
+    # 2) URL transcription
+    if url:
+        return await transcribe_url(request, url)
 
     # 3) Uploaded file transcription
     if file is None:
@@ -505,7 +505,7 @@ if url:
 
     try:
         os.remove(mp3_path)
-    except:
+    except Exception:
         pass
 
     return {"ok": True, "text": text}
