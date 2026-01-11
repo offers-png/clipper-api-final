@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from openai import OpenAI
+from db_history import insert_transcript
 from supabase import create_client, Client
 import requests
 
