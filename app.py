@@ -396,87 +396,72 @@ async def transcribe_clip(request: Request):
 
 
 @app.post("/transcribe")
-async def transcribe(
-    request: Request,
+async def transcribe_audio(
     file: UploadFile = File(None),
     url: str = Form(None),
-    clip_url: str = Form(None),
 ):
-    """Compatibility endpoint for frontend.
-    Supports:
-      - clip_url: transcribe an existing clipped file
-      - file: upload a media file and transcribe it
-      - url: download remote media then transcribe
-    """
-
-    # 1) Preferred: transcribe an existing clip
-    if clip_url:
-        return await transcribe_clip(request)
-
-    # 2) Upload file path
+    tmp = None
     src = None
-    filename = None
-    if file is not None:
-        filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
-        src = os.path.join(UPLOAD_DIR, filename)
-        with open(src, "wb") as f:
-            f.write(await file.read())
 
-    # 3) URL path
-    if (src is None) and url:
-        tmp = download_to_tmp(url)
-        filename = safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4")
-        src = os.path.join(UPLOAD_DIR, filename)
-        shutil.copy(tmp, src)
-        try:
-            os.remove(tmp)
-        except:
-            pass
-
-    if src is None:
-        return {"ok": False, "error": "Provide clip_url or file or url."}
-
-    # Convert to mp3
-    mp3_path = src.rsplit(".", 1)[0] + ".mp3"
-    code, err = run([
-        "ffmpeg", "-y", "-i", src,
-        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-        mp3_path
-    ], timeout=120)
-
-    if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": f"FFmpeg failed: {err}"}
-
-    # Whisper transcription
-    with open(mp3_path, "rb") as a:
-        tr = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=a,
-            response_format="text"
-        )
-    text = tr.strip() if isinstance(tr, str) else str(tr)
-
-    # Best-effort history logging (never fail the request)
     try:
-        s = sb()
-        if s:
-            s.table("history").insert({
-                "user_id": request.headers.get("x-user-id", "anonymous"),
-                "job_type": "transcript",
-                "source_name": filename or os.path.basename(src),
-                "transcript": text
-            }).execute()
-    except Exception as _e:
-        pass
+        # 1) URL transcription
+        if url:
+            tmp = download_to_tmp(url)
+            src = tmp
 
-    # Cleanup
-    for p in [mp3_path]:
-        try:
-            os.remove(p)
-        except:
-            pass
+        # 2) File upload transcription
+        elif file:
+            filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
+            src = os.path.join(UPLOAD_DIR, filename)
+            with open(src, "wb") as f:
+                f.write(await file.read())
 
-    return {"ok": True, "text": text}
+        else:
+            return JSONResponse(
+                {"ok": False, "error": "Provide a file or a url."},
+                status_code=400,
+            )
+
+        # Convert to MP3
+        mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+        code, err = run([
+            "ffmpeg", "-y", "-i", src,
+            "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+            mp3_path
+        ], timeout=120)
+
+        if code != 0 or not os.path.exists(mp3_path):
+            return JSONResponse(
+                {"ok": False, "error": f"FFmpeg failed: {err[:300]}"},
+                status_code=500,
+            )
+
+        # Whisper
+        with open(mp3_path, "rb") as a:
+            tr = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=a,
+                response_format="text",
+            )
+
+        text = tr.strip() if isinstance(tr, str) else str(tr)
+
+        return JSONResponse({"ok": True, "text": text})
+
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"Transcription failed: {str(e)}"},
+            status_code=500,
+        )
+
+    finally:
+        for p in [tmp, src]:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
