@@ -464,19 +464,14 @@ async def transcribe(
     request: Request,
     file: UploadFile = File(None),
     url: str = Form(None),
-    clip_url: str = Form(None),
 ):
-    # 1) Preferred: transcribe an existing clip
-    if clip_url:
-        return await transcribe_clip(request)
-
-    # 2) URL transcription
+    # 1) URL transcription (RESTORED — this is what worked)
     if url:
         return await transcribe_url(request, url)
 
-    # 3) Uploaded file transcription
+    # 2) File upload transcription
     if file is None:
-        return {"ok": False, "error": "Provide clip_url or file or url."}
+        return {"ok": False, "error": "Provide a file or a url."}
 
     filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
     src = os.path.join(UPLOAD_DIR, filename)
@@ -505,7 +500,7 @@ async def transcribe(
 
     try:
         os.remove(mp3_path)
-    except Exception:
+    except:
         pass
 
     return {"ok": True, "text": text}
