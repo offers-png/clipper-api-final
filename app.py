@@ -138,7 +138,6 @@ def download_to_tmp(url: str) -> str:
         # ✅ Use cookies.txt from /data to bypass bot check
         code, err = run([
             "yt-dlp",
-            "--cookies", "/data/cookies.txt",
             "-f", "mp4",
             "-o", tmp_path,
             "--no-playlist",
