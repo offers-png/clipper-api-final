@@ -466,13 +466,13 @@ async def transcribe(
     url: str = Form(None),
     clip_url: str = Form(None),
 ):
-    # 1) Existing clip transcription
-    if clip_url:
-        return await transcribe_clip(request)
+    # 1) Preferred: transcribe an existing clip
+if clip_url:
+    return await transcribe_clip(request)
 
-    # 2) URL transcription
-    if url:
-        return await transcribe_url(request, url)
+# 2) URL transcription
+if url and not file:
+    return await transcribe_url(request, url)
 
     # 3) Uploaded file transcription
     if file is None:
