@@ -394,6 +394,90 @@ async def transcribe_clip(request: Request):
     return {"ok": True, "text": text}
 
 
+
+@app.post("/transcribe")
+async def transcribe(
+    request: Request,
+    file: UploadFile = File(None),
+    url: str = Form(None),
+    clip_url: str = Form(None),
+):
+    """Compatibility endpoint for frontend.
+    Supports:
+      - clip_url: transcribe an existing clipped file
+      - file: upload a media file and transcribe it
+      - url: download remote media then transcribe
+    """
+
+    # 1) Preferred: transcribe an existing clip
+    if clip_url:
+        return await transcribe_clip(request)
+
+    # 2) Upload file path
+    src = None
+    filename = None
+    if file is not None:
+        filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
+        src = os.path.join(UPLOAD_DIR, filename)
+        with open(src, "wb") as f:
+            f.write(await file.read())
+
+    # 3) URL path
+    if (src is None) and url:
+        tmp = download_to_tmp(url)
+        filename = safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4")
+        src = os.path.join(UPLOAD_DIR, filename)
+        shutil.copy(tmp, src)
+        try:
+            os.remove(tmp)
+        except:
+            pass
+
+    if src is None:
+        return {"ok": False, "error": "Provide clip_url or file or url."}
+
+    # Convert to mp3
+    mp3_path = src.rsplit(".", 1)[0] + ".mp3"
+    code, err = run([
+        "ffmpeg", "-y", "-i", src,
+        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
+        mp3_path
+    ], timeout=120)
+
+    if code != 0 or not os.path.exists(mp3_path):
+        return {"ok": False, "error": f"FFmpeg failed: {err}"}
+
+    # Whisper transcription
+    with open(mp3_path, "rb") as a:
+        tr = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=a,
+            response_format="text"
+        )
+    text = tr.strip() if isinstance(tr, str) else str(tr)
+
+    # Best-effort history logging (never fail the request)
+    try:
+        s = sb()
+        if s:
+            s.table("history").insert({
+                "user_id": request.headers.get("x-user-id", "anonymous"),
+                "job_type": "transcript",
+                "source_name": filename or os.path.basename(src),
+                "transcript": text
+            }).execute()
+    except Exception as _e:
+        pass
+
+    # Cleanup
+    for p in [mp3_path]:
+        try:
+            os.remove(p)
+        except:
+            pass
+
+    return {"ok": True, "text": text}
+
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
     body = await request.json()
@@ -470,58 +554,6 @@ def resolve_local_media_path(url: str):
 # ======================================
 # TRANSCRIBE CLIPPED VIDEO (FAST + NO TIMEOUTS)
 # ======================================
-
-@app.post("/transcribe_clip")
-async def transcribe_clip(request: Request):
-    form = await request.form()
-    clip_url = form.get("clip_url", "")
-
-    if not clip_url:
-        return {"ok": False, "error": "clip_url is required"}
-
-    # Extract filename from URL
-    filename = clip_url.split("/")[-1]
-    clip_path = f"/data/exports/{filename}"
-
-    if not os.path.exists(clip_path):
-        return {"ok": False, "error": f"Clip not found on server: {clip_path}"}
-
-    # Convert clip to mp3
-    mp3_path = clip_path.replace(".mp4", ".mp3")
-    code, err = run([
-        "ffmpeg", "-y", "-i", clip_path,
-        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-        mp3_path
-    ], timeout=60)
-
-    if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": f"FFmpeg failed: {err}"}
-
-    # Whisper transcription
-    with open(mp3_path, "rb") as a:
-        tr = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=a,
-            response_format="text"
-        )
-
-    text = tr.strip() if isinstance(tr, str) else str(tr)
-
-    # Cleanup small mp3
-    try:
-        os.remove(mp3_path)
-    except:
-        pass
-
-    return {"ok": True, "text": text}
-
-
-# ======================================
-# AI CHAT ENDPOINT (FINAL + WORKING)
-# ======================================
-
-from openai import OpenAI
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
