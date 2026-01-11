@@ -471,7 +471,7 @@ if clip_url:
     return await transcribe_clip(request)
 
 # 2) URL transcription
-if url and not file:
+if url:
     return await transcribe_url(request, url)
 
     # 3) Uploaded file transcription
