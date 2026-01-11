@@ -466,22 +466,15 @@ async def transcribe(
     url: str = Form(None),
     clip_url: str = Form(None),
 ):
-    """Compatibility endpoint for frontend.
-    Supports:
-      - clip_url: transcribe an existing clipped file
-      - file: upload a media file and transcribe it
-      - url: download remote media then transcribe
-    """
-
-    # 1) Preferred: transcribe an existing clip
+    # 1) Existing clip transcription
     if clip_url:
         return await transcribe_clip(request)
 
-    # 2) URL transcription (use the helper)
+    # 2) URL transcription
     if url:
         return await transcribe_url(request, url)
 
-    # 3) Upload file transcription
+    # 3) Uploaded file transcription
     if file is None:
         return {"ok": False, "error": "Provide clip_url or file or url."}
 
@@ -501,9 +494,6 @@ async def transcribe(
     if code != 0 or not os.path.exists(mp3_path):
         return {"ok": False, "error": f"FFmpeg failed: {err}"}
 
-    if client is None:
-        return {"ok": False, "error": "OPENAI_API_KEY is not set on the server"}
-
     with open(mp3_path, "rb") as a:
         tr = client.audio.transcriptions.create(
             model="whisper-1",
@@ -513,26 +503,13 @@ async def transcribe(
 
     text = tr.strip() if isinstance(tr, str) else str(tr)
 
-    # Best-effort history logging
-    try:
-        s = sb()
-        if s:
-            s.table("history").insert({
-                "user_id": request.headers.get("x-user-id", "anonymous"),
-                "job_type": "transcript",
-                "source_name": filename,
-                "transcript": text
-            }).execute()
-    except Exception:
-        pass
-
     try:
         os.remove(mp3_path)
-    except Exception:
+    except:
         pass
 
     return {"ok": True, "text": text}
-
+    
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
