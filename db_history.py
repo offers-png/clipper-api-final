@@ -11,9 +11,10 @@ from typing import Optional
 
 _sb: Optional[Client] = None
 
+from typing import Optional
 
+def get_db() -> Optional[Client]:
 
-def get_db() -> Client | None:
     """Lazy init. Never crash the app if env vars are missing."""
     global _sb
     if _sb:
