@@ -25,13 +25,16 @@ def get_db() -> Optional[Client]:
     return _sb
 
 
+from typing import Optional
+
 def insert_transcript(
     *,
     user_id: str,
     source_name: str,
     transcript: str,
-    duration: float | None = None,
+    duration: Optional[float] = None,
 ):
+
     """Safe insert. Errors are swallowed by caller."""
     db = get_db()
     if not db:
