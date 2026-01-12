@@ -1,6 +1,7 @@
 # db_history.py
 # Database-only logic. NO FastAPI. NO ffmpeg. NO whisper.
 
+print("🔥 LOADED db_history.py FROM:", __file__)
 import os
 from supabase import create_client, Client
 
@@ -47,6 +48,8 @@ def insert_transcript(
         "transcript": transcript,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
+
+    print("🔥 insert_transcript CALLED", user_id, source_name)
 
     print("SUPABASE INSERT RESULT:", res)
 
