@@ -7,7 +7,10 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-_sb: Client | None = None
+from typing import Optional
+
+_sb: Optional[Client] = None
+
 
 
 def get_db() -> Client | None:
