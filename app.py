@@ -401,6 +401,8 @@ async def transcribe_audio(
     file: UploadFile = File(None),
     url: str = Form(None),
 ):
+    print("TRANSCRIBE REQUEST:", file.filename if file else "no file")
+
     tmp = None
     src = None
 
