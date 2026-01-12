@@ -41,12 +41,12 @@ def insert_transcript(
         return False
 
     db.table("history").insert({
-        "user_id": user_id,
-        "job_type": "transcript",
-        "source_name": source_name,
-        "transcript": transcript,
-        "duration": duration,
-    }).execute()
+    "user_id": user_id,
+    "job_type": "transcript",
+    "source_name": source_name,
+    "transcript": transcript,
+}).execute()
+
     return True
 
 
