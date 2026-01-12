@@ -24,11 +24,9 @@ def get_db() -> Optional[Client]:
     _sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _sb
 
-
 from typing import Optional
+from datetime import datetime, timezone
 
-print("SUPABASE_URL:", bool(SUPABASE_URL))
-print("SUPABASE_KEY:", bool(SUPABASE_KEY))
 def insert_transcript(
     *,
     user_id: str,
@@ -36,20 +34,28 @@ def insert_transcript(
     transcript: str,
     duration: Optional[float] = None,
 ):
-
-    """Safe insert. Errors are swallowed by caller."""
+    """Safe insert. Errors are logged."""
     db = get_db()
     if not db:
+        print("NO DB CLIENT")
         return False
 
-    db.table("history").insert({
-    "user_id": user_id,
-    "job_type": "transcript",
-    "source_name": source_name,
-    "transcript": transcript,
-}).execute()
+    res = db.table("history").insert({
+        "user_id": user_id,
+        "job_type": "transcript",
+        "source_name": source_name,
+        "transcript": transcript,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
 
-    return True
+    print("SUPABASE INSERT RESULT:", res)
+
+    if res.data:
+        return True
+
+    print("SUPABASE INSERT ERROR:", res.error)
+    return False
+
 
 
 def get_user_history(user_id: str, limit: int = 50):
