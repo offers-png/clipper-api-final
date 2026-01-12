@@ -27,6 +27,8 @@ def get_db() -> Optional[Client]:
 
 from typing import Optional
 
+print("SUPABASE_URL:", bool(SUPABASE_URL))
+print("SUPABASE_KEY:", bool(SUPABASE_KEY))
 def insert_transcript(
     *,
     user_id: str,
