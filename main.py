@@ -105,57 +105,52 @@ def download(filename: str):
     )
 
 @app.post("/transcribe")
-async def transcribe_audio(
-    file: UploadFile = File(...),
-    user_id: str = Form(...)
+async def transcribe_endpoint(
+    file: UploadFile = File(None),
+    user_id: str = Form(default="anonymous")
 ):
     """
-    Transcribe audio/video file and save to database
+    Main transcription endpoint that saves to database
     """
     try:
-        print(f"📥 Received transcription request from user: {user_id}")
-        print(f"   File: {file.filename}, Content-Type: {file.content_type}")
+        # Get the filename
+        source_name = file.filename if file else "unknown_file"
         
-        # Save uploaded file temporarily
-        temp_path = f"/tmp/{file.filename}"
-        with open(temp_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        print(f"📥 TRANSCRIBE REQUEST: {source_name}")
+        print(f"   User ID: {user_id}")
         
-        # TODO: Your actual transcription logic here
-        # For now, using placeholder text
-        transcript_text = "This is a test transcript. Replace this with your actual Whisper transcription logic."
+        # YOUR EXISTING TRANSCRIPTION LOGIC GOES HERE
+        # Replace this placeholder with your actual Whisper/transcription code
+        transcript_text = "Placeholder transcript - replace with actual Whisper transcription"
         
-        # Calculate duration (you'll want to implement this with ffmpeg or similar)
-        duration = None  # or calculate actual duration
+        # If you have actual transcription logic, it would look something like:
+        # transcript_text = your_whisper_function(file)
         
         # Save to database
-        success = insert_transcript(
+        db_success = insert_transcript(
             user_id=user_id,
-            source_name=file.filename,
+            source_name=source_name,
             transcript=transcript_text,
-            duration=duration,
-            preview_url=None,  # Add if you generate preview
-            final_url=None     # Add if you upload to storage
+            duration=None,  # Add if you calculate duration
+            preview_url=None,
+            final_url=None
         )
         
-        if not success:
-            print("⚠️ Warning: Transcript generated but failed to save to database")
-        
-        # Clean up temp file
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        if db_success:
+            print(f"✅ Transcript saved to database for user: {user_id}")
+        else:
+            print(f"⚠️ Failed to save transcript to database")
         
         return {
             "success": True,
             "transcript": transcript_text,
-            "saved_to_db": success,
+            "saved_to_db": db_success,
             "user_id": user_id,
-            "source_name": file.filename
+            "source_name": source_name
         }
         
     except Exception as e:
-        print(f"❌ Transcription error: {type(e).__name__}: {str(e)}")
+        print(f"❌ Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/history/{user_id}")
@@ -170,7 +165,7 @@ async def get_history(user_id: str, limit: int = 50):
             "history": history
         }
     except Exception as e:
-        print(f"❌ Error fetching history: {type(e).__name__}: {str(e)}")
+        print(f"❌ Error fetching history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/history/{record_id}")
@@ -191,24 +186,43 @@ async def delete_history_record(record_id: str):
             raise HTTPException(status_code=404, detail="Record not found")
             
     except Exception as e:
-        print(f"❌ Delete error: {type(e).__name__}: {str(e)}")
+        print(f"❌ Delete error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/test/insert")
-async def test_insert(user_id: str = Query(default="test_user")):
+async def test_insert(user_id: str = Query(default="@ClippedBySal")):
     """Test endpoint to verify database insert works"""
+    print(f"🧪 TEST INSERT for user: {user_id}")
+    
     success = insert_transcript(
         user_id=user_id,
-        source_name="test_file.mp4",
-        transcript="This is a test transcript to verify database connectivity.",
+        source_name="Flashlight Fear An Encounter with the Occult.mp4",
+        transcript="This is a test transcript. Effect, accumulated fear. He freezes in fear. Mysterious footsteps approaching from behind.",
         duration=120.5,
         preview_url="https://example.com/preview.mp4",
         final_url="https://example.com/final.mp4"
     )
     
     if success:
-        return {"success": True, "message": "Test record inserted successfully"}
+        return {"success": True, "message": f"Test record inserted for {user_id}"}
     else:
         raise HTTPException(status_code=500, detail="Failed to insert test record")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+```
+
+**Now test it:**
+
+1. **First, test the database connection:**
+```
+   https://clipper-api-final-1.onrender.com/health/db
+```
+
+2. **Insert a test record:**
+```
+   https://clipper-api-final-1.onrender.com/test/insert?user_id=@ClippedBySal
+```
+
+3. **Check if it saved:**
+```
+   https://clipper-api-final-1.onrender.com/history/@ClippedBySal
