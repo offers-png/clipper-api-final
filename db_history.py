@@ -34,29 +34,36 @@ def insert_transcript(
     source_name: str,
     transcript: str,
     duration: Optional[float] = None,
+    preview_url: Optional[str] = None,
+    final_url: Optional[str] = None,
 ):
     """Safe insert. Errors are logged."""
     db = get_db()
     if not db:
         print("NO DB CLIENT")
         return False
-
-    res = db.table("history").insert({
+    
+    data = {
         "user_id": user_id,
         "job_type": "transcript",
         "source_name": source_name,
         "transcript": transcript,
         "created_at": datetime.now(timezone.utc).isoformat(),
-    }).execute()
-
+    }
+    
+    # Add optional fields if provided
+    if preview_url:
+        data["preview_url"] = preview_url
+    if final_url:
+        data["final_url"] = final_url
+    
+    res = db.table("history").insert(data).execute()
     print("🔥 insert_transcript CALLED", user_id, source_name)
-
     print("SUPABASE INSERT RESULT:", res)
-
+    
     if res.data:
         return True
-
-    print("SUPABASE INSERT ERROR:", res.error)
+    print("SUPABASE INSERT ERROR:", getattr(res, 'error', None))
     return False
 
 
