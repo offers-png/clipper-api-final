@@ -1,32 +1,36 @@
 # db_history.py
 # Database-only logic. NO FastAPI. NO ffmpeg. NO whisper.
-
 print("🔥 LOADED db_history.py FROM:", __file__)
+
 import os
+from typing import Optional
+from datetime import datetime, timezone
 from supabase import create_client, Client
 
+# Environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # service_role key
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-from typing import Optional
-
+# Global client instance
 _sb: Optional[Client] = None
 
-from typing import Optional
 
 def get_db() -> Optional[Client]:
-
     """Lazy init. Never crash the app if env vars are missing."""
     global _sb
     if _sb:
         return _sb
     if not SUPABASE_URL or not SUPABASE_KEY:
+        print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
         return None
-    _sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    return _sb
+    try:
+        _sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client initialized")
+        return _sb
+    except Exception as e:
+        print(f"❌ Failed to create Supabase client: {e}")
+        return None
 
-from typing import Optional
-from datetime import datetime, timezone
 
 def insert_transcript(
     *,
@@ -36,49 +40,91 @@ def insert_transcript(
     duration: Optional[float] = None,
     preview_url: Optional[str] = None,
     final_url: Optional[str] = None,
-):
-    """Safe insert. Errors are logged."""
+) -> bool:
+    """Safe insert. Errors are logged. Returns True on success."""
     db = get_db()
     if not db:
-        print("NO DB CLIENT")
+        print("❌ NO DB CLIENT - cannot insert transcript")
         return False
     
-    data = {
-        "user_id": user_id,
-        "job_type": "transcript",
-        "source_name": source_name,
-        "transcript": transcript,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    
-    # Add optional fields if provided
-    if preview_url:
-        data["preview_url"] = preview_url
-    if final_url:
-        data["final_url"] = final_url
-    
-    res = db.table("history").insert(data).execute()
-    print("🔥 insert_transcript CALLED", user_id, source_name)
-    print("SUPABASE INSERT RESULT:", res)
-    
-    if res.data:
-        return True
-    print("SUPABASE INSERT ERROR:", getattr(res, 'error', None))
-    return False
+    try:
+        data = {
+            "user_id": user_id,
+            "job_type": "transcript",
+            "source_name": source_name,
+            "transcript": transcript,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        # Add optional fields if provided
+        if preview_url:
+            data["preview_url"] = preview_url
+        if final_url:
+            data["final_url"] = final_url
+        if duration is not None:
+            data["duration"] = duration
+        
+        print(f"🔥 insert_transcript CALLED - user_id: {user_id}, source: {source_name}")
+        
+        res = db.table("history").insert(data).execute()
+        
+        if res.data:
+            print(f"✅ SUPABASE INSERT SUCCESS: {len(res.data)} row(s) inserted")
+            print(f"   Inserted ID: {res.data[0].get('id') if res.data else 'unknown'}")
+            return True
+        else:
+            print(f"❌ SUPABASE INSERT FAILED - No data returned")
+            return False
+            
+    except Exception as e:
+        print(f"❌ SUPABASE INSERT ERROR: {type(e).__name__}: {str(e)}")
+        return False
 
 
-
-def get_user_history(user_id: str, limit: int = 50):
+def get_user_history(user_id: str, limit: int = 50) -> list:
+    """Retrieve user's transcript history. Returns empty list on error."""
     db = get_db()
     if not db:
+        print("❌ NO DB CLIENT - cannot retrieve history")
+        return []
+    
+    try:
+        res = (
+            db.table("history")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        
+        data = res.data or []
+        print(f"📚 Retrieved {len(data)} history records for user_id: {user_id}")
+        return data
+        
+    except Exception as e:
+        print(f"❌ ERROR retrieving history: {type(e).__name__}: {str(e)}")
         return []
 
-    res = (
-        db.table("history")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    return res.data or []
+
+def test_connection() -> bool:
+    """Test database connection. Returns True if successful."""
+    db = get_db()
+    if not db:
+        print("❌ DB connection test failed - no client")
+        return False
+    
+    try:
+        # Simple query to test connection
+        res = db.table("history").select("id").limit(1).execute()
+        print("✅ DB connection test PASSED")
+        return True
+    except Exception as e:
+        print(f"❌ DB connection test FAILED: {type(e).__name__}: {str(e)}")
+        return False
+
+
+# Optional: Test connection on import
+if __name__ == "__main__":
+    print("\n🧪 Testing database connection...")
+    test_connection()
