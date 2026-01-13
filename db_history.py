@@ -6,7 +6,7 @@ import os
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_ROLE")  # service_role key
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # service_role key
 
 from typing import Optional
 
