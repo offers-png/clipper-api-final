@@ -37,24 +37,34 @@ def insert_transcript(
     user_id: str,
     source_name: str,
     transcript: str,
-    duration: Optional[float] = None,
-    preview_url: Optional[str] = None,
-    final_url: Optional[str] = None,
+    titles: list | None = None,
+    hooks: list | None = None,
+    hashtags: list | None = None,
+    duration: float | None = None,
+    preview_url: str | None = None,
+    final_url: str | None = None,
 ) -> bool:
-    """Safe insert. Errors are logged. Returns True on success."""
     db = get_db()
     if not db:
-        print("❌ NO DB CLIENT - cannot insert transcript")
         return False
-    
-    try:
-        data = {
-            "user_id": user_id,
-            "job_type": "transcript",
-            "source_name": source_name,
-            "transcript": transcript,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+
+    data = {
+        "user_id": user_id,
+        "job_type": "transcript",
+        "source_name": source_name,
+        "transcript": transcript,
+        "titles": titles,
+        "hooks": hooks,
+        "hashtags": hashtags,
+        "duration": duration,
+        "preview_url": preview_url,
+        "final_url": final_url,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    res = db.table("history").insert(data).execute()
+    return bool(res.data)
+
         
         # Add optional fields if provided
         if preview_url:
