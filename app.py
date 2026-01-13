@@ -400,22 +400,24 @@ async def transcribe_clip(request: Request):
 async def transcribe_audio(
     file: UploadFile = File(None),
     url: str = Form(None),
+    user_id: str = Form(default="@ClippedBySal"),  # Added user_id parameter
 ):
-    print("TRANSCRIBE REQUEST:", file.filename if file else "no file")
-
     tmp = None
     src = None
+    source_name = None
 
     try:
         # 1) URL transcription
         if url:
             tmp = download_to_tmp(url)
             src = tmp
+            source_name = url.split("/")[-1] if "/" in url else url
 
         # 2) File upload transcription
         elif file:
             filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
             src = os.path.join(UPLOAD_DIR, filename)
+            source_name = file.filename
             with open(src, "wb") as f:
                 f.write(await file.read())
 
@@ -449,7 +451,26 @@ async def transcribe_audio(
 
         text = tr.strip() if isinstance(tr, str) else str(tr)
 
-        return JSONResponse({"ok": True, "text": text})
+        # ✅ Save to database
+        try:
+            db_success = insert_transcript(
+                user_id=user_id,
+                source_name=source_name or "unknown",
+                transcript=text,
+                duration=None,  # Add if you want to calculate duration
+                preview_url=None,
+                final_url=None
+            )
+            
+            if db_success:
+                print(f"✅ Transcript saved to database for user: {user_id}")
+            else:
+                print(f"⚠️ Failed to save transcript to database for user: {user_id}")
+        except Exception as db_err:
+            print(f"❌ Database error: {str(db_err)}")
+            # Don't fail the whole request if DB save fails
+
+        return JSONResponse({"ok": True, "text": text, "saved_to_db": db_success if 'db_success' in locals() else False})
 
     except Exception as e:
         return JSONResponse(
