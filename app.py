@@ -641,3 +641,32 @@ async def update_history(
 
     return {"ok": True, "updated": list(data.keys())}
 
+   @app.post("/save_ai_insights")
+async def save_ai_insights(
+    record_id: str = Form(...),
+    hooks: Optional[str] = Form(None),
+    hashtags: Optional[str] = Form(None),
+    summary: Optional[str] = Form(None),
+):
+    from db_history import get_db
+    
+    db = get_db()
+    if not db:
+        return {"ok": False, "error": "Database unavailable"}
+    
+    data = {}
+    if hooks:
+        data["hooks"] = hooks
+    if hashtags:
+        data["hashtags"] = hashtags
+    if summary:
+        data["summary"] = summary
+    
+    if not data:
+        return {"ok": False, "message": "No data to save"}
+    
+    try:
+        res = db.table("history").update(data).eq("id", record_id).execute()
+        return {"ok": True, "updated": list(data.keys())}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
