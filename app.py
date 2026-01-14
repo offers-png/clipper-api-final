@@ -608,3 +608,35 @@ async def ai_chat(request: Request):
     reply_text = completion.choices[0].message.content
 
     return {"ok": True, "reply": reply_text}
+
+@app.post("/history/update")
+async def update_history(
+    record_id: str = Form(...),
+    hooks: str | None = Form(None),
+    hashtags: str | None = Form(None),
+    summary: str | None = Form(None),
+    final_url: str | None = Form(None),
+):
+    from db_history import get_db
+
+    db = get_db()
+    if not db:
+        raise HTTPException(500, "Database unavailable")
+
+    data = {}
+    if hooks is not None:
+        data["hooks"] = hooks
+    if hashtags is not None:
+        data["hashtags"] = hashtags
+    if summary is not None:
+        data["summary"] = summary
+    if final_url is not None:
+        data["final_url"] = final_url
+
+    if not data:
+        return {"ok": False, "message": "Nothing to update"}
+
+    res = db.table("history").update(data).eq("id", record_id).execute()
+
+    return {"ok": True, "updated": list(data.keys())}
+
