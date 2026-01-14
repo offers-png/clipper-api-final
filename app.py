@@ -644,12 +644,14 @@ async def update_history(
    @app.post("/save_ai_insights")
 async def save_ai_insights(
     record_id: str = Form(...),
-    hooks: Optional[str] = Form(None),
-    hashtags: Optional[str] = Form(None),
-    summary: Optional[str] = Form(None),
-    titles: Optional[str] = Form(None),
-    final_url: Optional[str] = Form(None),
+    hooks: str | None = Form(None),
+    hashtags: str | None = Form(None),
+    summary: str | None = Form(None),
+    titles: str | None = Form(None),
+    final_url: str | None = Form(None),
 ):
+    ...
+
     from db_history import get_db
     
     db = get_db()
