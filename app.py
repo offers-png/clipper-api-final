@@ -451,22 +451,26 @@ async def transcribe_audio(
 
         text = tr.strip() if isinstance(tr, str) else str(tr)
   
-        # ✅ Save to database
+                # ✅ Save to database
         try:
-          db_success = insert_transcript(
-    user_id=user_id,
-    source_name=source_name or "unknown",
-    transcript=text,
-    duration=None,
-    preview_url=None,
-    final_url=None
-)       
-  if db_success:
-     print(f"✅ Transcript saved to database for user: {user_id}")
-         else:
-    print(f"⚠️ Failed to save transcript to database for user: {user_id}")
-    except Exception as db_err:
-    print(f"❌ Database error: {str(db_err)}")
+            db_success = insert_transcript(
+                user_id=user_id,
+                source_name=source_name or "unknown",
+                transcript=text,
+                duration=None,
+                preview_url=None,
+                final_url=None,
+            )
+
+            if db_success:
+                print(f"✅ Transcript saved to database for user: {user_id}")
+            else:
+                print(f"⚠️ Failed to save transcript to database for user: {user_id}")
+
+        except Exception as db_err:
+            print(f"❌ Database error: {str(db_err)}")
+            db_success = False
+
     # Don't fail the whole request if DB save fails
 
         return JSONResponse({"ok": True, "text": text, "saved_to_db": db_success if 'db_success' in locals() else False})
