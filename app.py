@@ -647,6 +647,8 @@ async def save_ai_insights(
     hooks: Optional[str] = Form(None),
     hashtags: Optional[str] = Form(None),
     summary: Optional[str] = Form(None),
+    titles: Optional[str] = Form(None),
+    final_url: Optional[str] = Form(None),
 ):
     from db_history import get_db
     
