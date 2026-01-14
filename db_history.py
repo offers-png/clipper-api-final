@@ -71,24 +71,6 @@ def insert_transcript(
     res = db.table("history").insert(data).execute()
     return bool(res.data)
 
-
-        
-        # Add optional fields if provided
-        if preview_url:
-            data["preview_url"] = preview_url
-        if final_url:
-            data["final_url"] = final_url
-        if duration is not None:
-            data["duration"] = duration
-        if titles is not None:
-    data["titles"] = titles
-
-if hooks is not None:
-    data["hooks"] = hooks
-
-if hashtags is not None:
-    data["hashtags"] = hashtags
-
         print(f"🔥 insert_transcript CALLED - user_id: {user_id}, source: {source_name}")
         
         res = db.table("history").insert(data).execute()
