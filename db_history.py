@@ -71,7 +71,6 @@ def insert_transcript(
     res = db.table("history").insert(data).execute()
     return bool(res.data)
 
-        print(f"🔥 insert_transcript CALLED - user_id: {user_id}, source: {source_name}")
         
         res = db.table("history").insert(data).execute()
         
