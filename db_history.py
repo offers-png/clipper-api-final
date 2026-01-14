@@ -71,35 +71,6 @@ def insert_transcript(
     res = db.table("history").insert(data).execute()
     return bool(res.data)
         
-        if res.data:
-            print(f"✅ SUPABASE INSERT SUCCESS: {len(res.data)} row(s) inserted")
-            print(f"   Inserted ID: {res.data[0].get('id') if res.data else 'unknown'}")
-            return True
-        else:
-            print(f"❌ SUPABASE INSERT FAILED - No data returned")
-            return False
-            
-    except Exception as e:
-        print(f"❌ SUPABASE INSERT ERROR: {type(e).__name__}: {str(e)}")
-        return False
-
-
-def get_user_history(user_id: str, limit: int = 50) -> list:
-    """Retrieve user's transcript history. Returns empty list on error."""
-    db = get_db()
-    if not db:
-        print("❌ NO DB CLIENT - cannot retrieve history")
-        return []
-    
-    try:
-        res = (
-            db.table("history")
-            .select("*")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
         
         data = res.data or []
         print(f"📚 Retrieved {len(data)} history records for user_id: {user_id}")
