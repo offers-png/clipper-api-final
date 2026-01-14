@@ -450,11 +450,13 @@ async def transcribe_audio(
             )
 
         text = tr.strip() if isinstance(tr, str) else str(tr)
-        # --- AI GENERATED RESULTS (CACHE THESE) ---
-titles = ai_titles if "ai_titles" in locals() else None
-hooks = ai_hooks if "ai_hooks" in locals() else None
-hashtags = ai_hashtags if "ai_hashtags" in locals() else None
 
+         # --- AI GENERATED RESULTS (CACHE THESE) ---
+         titles = ai_titles if "ai_titles" in locals() else None
+         hooks = ai_hooks if "ai_hooks" in locals() else None
+         hashtags = ai_hashtags if "ai_hashtags" in locals() else None
+
+           
         # ✅ Save to database
         try:
             db_success = insert_transcript(
