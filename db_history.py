@@ -70,9 +70,6 @@ def insert_transcript(
 
     res = db.table("history").insert(data).execute()
     return bool(res.data)
-
-        
-        res = db.table("history").insert(data).execute()
         
         if res.data:
             print(f"✅ SUPABASE INSERT SUCCESS: {len(res.data)} row(s) inserted")
