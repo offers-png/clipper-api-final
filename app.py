@@ -612,15 +612,16 @@ async def ai_chat(request: Request):
 @app.post("/history/update")
 async def update_history(
     record_id: str = Form(...),
-    hooks: str | None = Form(None),
-    hashtags: str | None = Form(None),
-    summary: str | None = Form(None),
-    final_url: str | None = Form(None),
+    hooks: Optional[str] = Form(None),
+    hashtags: Optional[str] = Form(None),
+    summary: Optional[str] = Form(None),
+    final_url: Optional[str] = Form(None),
 ):
     from db_history import get_db
 
     db = get_db()
     if not db:
+        from fastapi import HTTPException
         raise HTTPException(500, "Database unavailable")
 
     data = {}
