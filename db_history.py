@@ -73,7 +73,15 @@ def insert_transcript(
             data["final_url"] = final_url
         if duration is not None:
             data["duration"] = duration
-        
+        if titles is not None:
+    data["titles"] = titles
+
+if hooks is not None:
+    data["hooks"] = hooks
+
+if hashtags is not None:
+    data["hashtags"] = hashtags
+
         print(f"🔥 insert_transcript CALLED - user_id: {user_id}, source: {source_name}")
         
         res = db.table("history").insert(data).execute()
