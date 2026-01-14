@@ -31,7 +31,6 @@ def get_db() -> Optional[Client]:
         print(f"❌ Failed to create Supabase client: {e}")
         return None
 
-
 def insert_transcript(
     *,
     user_id: str,
@@ -53,17 +52,25 @@ def insert_transcript(
         "job_type": "transcript",
         "source_name": source_name,
         "transcript": transcript,
-        "titles": titles,
-        "hooks": hooks,
-        "hashtags": hashtags,
-        "duration": duration,
-        "preview_url": preview_url,
-        "final_url": final_url,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    if titles is not None:
+        data["titles"] = titles
+    if hooks is not None:
+        data["hooks"] = hooks
+    if hashtags is not None:
+        data["hashtags"] = hashtags
+    if duration is not None:
+        data["duration"] = duration
+    if preview_url:
+        data["preview_url"] = preview_url
+    if final_url:
+        data["final_url"] = final_url
+
     res = db.table("history").insert(data).execute()
     return bool(res.data)
+
 
         
         # Add optional fields if provided
