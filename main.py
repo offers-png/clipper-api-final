@@ -2,7 +2,7 @@ from fastapi import FastAPI, Query, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from db_history import insert_transcript, get_user_history, test_connection
+from db_history import insert_transcript, get_db
 import yt_dlp
 import os
 import uuid
@@ -58,13 +58,7 @@ def is_safe_url(url: str) -> bool:
 def root():
     return {"ok": True, "service": "ClipForge AI Backend", "version": "3.1.0"}
 
-@app.get("/health/db")
-async def health_check_db():
-    """Test database connectivity"""
-    if test_connection():
-        return {"status": "ok", "message": "Database connected"}
-    else:
-        return {"status": "error", "message": "Database connection failed"}
+
 
 @app.get("/fetch")
 def fetch(url: str = Query(...)):
@@ -107,66 +101,54 @@ def download(filename: str):
 @app.post("/transcribe")
 async def transcribe_endpoint(
     file: UploadFile = File(None),
-    user_id: str = Form(default="anonymous")
+    url: str = Form(default=None),
+    user_id: str = Form(default="@anonymous"),
 ):
-    """
-    Main transcription endpoint that saves to database
-    """
     try:
-        # Get the filename
-        source_name = file.filename if file else "unknown_file"
-        
-        print(f"📥 TRANSCRIBE REQUEST: {source_name}")
-        print(f"   User ID: {user_id}")
-        
-        # YOUR EXISTING TRANSCRIPTION LOGIC GOES HERE
-        # Replace this placeholder with your actual Whisper/transcription code
-        transcript_text = "Placeholder transcript - replace with actual Whisper transcription"
-        
-        # If you have actual transcription logic, it would look something like:
-        # transcript_text = your_whisper_function(file)
-        
-        # Save to database
-        db_success = insert_transcript(
+        if not file and not url:
+            raise HTTPException(status_code=400, detail="File or URL required")
+
+        # -------------------------
+        # SOURCE NAME
+        # -------------------------
+        source_name = file.filename if file else url
+
+        print(f"📥 TRANSCRIBE REQUEST")
+        print(f"   user_id: {user_id}")
+        print(f"   source: {source_name}")
+
+        # -------------------------
+        # TRANSCRIPTION PLACEHOLDER
+        # (replace with Whisper output)
+        # -------------------------
+        transcript_text = (
+            "Placeholder transcript - replace with actual Whisper transcription"
+        )
+
+        # -------------------------
+        # SAVE TO SUPABASE (THIS WAS MISSING)
+        # -------------------------
+        saved = insert_transcript(
             user_id=user_id,
             source_name=source_name,
             transcript=transcript_text,
-            duration=None,  # Add if you calculate duration
-            preview_url=None,
-            final_url=None
         )
-        
-        if db_success:
-            print(f"✅ Transcript saved to database for user: {user_id}")
-        else:
-            print(f"⚠️ Failed to save transcript to database")
-        
+
+        print("✅ DB INSERT:", saved)
+
         return {
             "success": True,
-            "transcript": transcript_text,
-            "saved_to_db": db_success,
+            "saved_to_db": saved,
             "user_id": user_id,
-            "source_name": source_name
+            "source_name": source_name,
+            "transcript": transcript_text,
         }
-        
+
     except Exception as e:
-        print(f"❌ Transcription error: {str(e)}")
+        print("❌ TRANSCRIBE ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/history/{user_id}")
-async def get_history(user_id: str, limit: int = 50):
-    """Retrieve user's transcript history"""
-    try:
-        history = get_user_history(user_id, limit)
-        return {
-            "success": True,
-            "user_id": user_id,
-            "count": len(history),
-            "history": history
-        }
-    except Exception as e:
-        print(f"❌ Error fetching history: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/history/{record_id}")
 async def delete_history_record(record_id: str):
