@@ -72,33 +72,4 @@ def insert_transcript(
     return bool(res.data)
         
         
-        data = res.data or []
-        print(f"📚 Retrieved {len(data)} history records for user_id: {user_id}")
-        return data
-        
-    except Exception as e:
-        print(f"❌ ERROR retrieving history: {type(e).__name__}: {str(e)}")
-        return []
-
-
-def test_connection() -> bool:
-    """Test database connection. Returns True if successful."""
-    db = get_db()
-    if not db:
-        print("❌ DB connection test failed - no client")
-        return False
-    
-    try:
-        # Simple query to test connection
-        res = db.table("history").select("id").limit(1).execute()
-        print("✅ DB connection test PASSED")
-        return True
-    except Exception as e:
-        print(f"❌ DB connection test FAILED: {type(e).__name__}: {str(e)}")
-        return False
-
-
-# Optional: Test connection on import
-if __name__ == "__main__":
-    print("\n🧪 Testing database connection...")
-    test_connection()
+       
