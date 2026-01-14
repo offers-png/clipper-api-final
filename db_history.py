@@ -31,18 +31,21 @@ def get_db() -> Optional[Client]:
         print(f"❌ Failed to create Supabase client: {e}")
         return None
 
+from typing import Optional, List
+
 def insert_transcript(
     *,
     user_id: str,
     source_name: str,
     transcript: str,
-    titles: list | None = None,
-    hooks: list | None = None,
-    hashtags: list | None = None,
-    duration: float | None = None,
-    preview_url: str | None = None,
-    final_url: str | None = None,
+    titles: Optional[List] = None,
+    hooks: Optional[List] = None,
+    hashtags: Optional[List] = None,
+    duration: Optional[float] = None,
+    preview_url: Optional[str] = None,
+    final_url: Optional[str] = None,
 ) -> bool:
+
     db = get_db()
     if not db:
         return False
