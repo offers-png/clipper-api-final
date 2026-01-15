@@ -73,19 +73,20 @@ def insert_transcript(
 
     res = db.table("history").insert(data).execute()
     return bool(res.data)
-        
-    def upsert_history(
+
+
+def upsert_history(
     *,
-    record_id: str | None,
+    record_id: Optional[str],
     user_id: str,
-    source_name: str | None = None,
-    transcript: str | None = None,
-    titles: list | None = None,
-    hooks: list | None = None,
-    hashtags: list | None = None,
-    summary: str | None = None,
-    preview_url: str | None = None,
-    final_url: str | None = None,
+    source_name: Optional[str] = None,
+    transcript: Optional[str] = None,
+    titles: Optional[list] = None,
+    hooks: Optional[list] = None,
+    hashtags: Optional[list] = None,
+    summary: Optional[str] = None,
+    preview_url: Optional[str] = None,
+    final_url: Optional[str] = None,
 ):
     db = get_db()
     if not db:
@@ -102,16 +103,8 @@ def insert_transcript(
     if final_url is not None: data["final_url"] = final_url
 
     if record_id:
-        return (
-            db.table("history")
-            .update(data)
-            .eq("id", record_id)
-            .execute()
-        )
+        return db.table("history").update(data).eq("id", record_id).execute()
 
     data["user_id"] = user_id
     data["created_at"] = datetime.now(timezone.utc).isoformat()
-
     return db.table("history").insert(data).execute()
-
-       
