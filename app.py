@@ -636,7 +636,7 @@ async def update_history(
     if final_url is not None:
         data["final_url"] = final_url
     if titles is not None:
-    data["titles"] = titles
+        data["titles"] = titles
 
     if not data:
         return {"ok": False, "message": "Nothing to update"}
