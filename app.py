@@ -642,7 +642,7 @@ async def update_history(
         return {"ok": False, "message": "Nothing to update"}
 
     import asyncio
-await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)
     res = db.table("history").update(data).eq("id", record_id).execute()
 
     return {"ok": True, "updated": list(data.keys())}
@@ -683,7 +683,7 @@ async def save_ai_insights(
     if not data:
         return {"ok": False, "message": "Nothing to update"}
       import asyncio
-await asyncio.sleep(0.5)
+      await asyncio.sleep(0.5)
 
     db.table("history").update(data).eq("id", record_id).execute()
     return {"ok": True, "updated": list(data.keys())}
