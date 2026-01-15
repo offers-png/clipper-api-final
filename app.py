@@ -667,10 +667,10 @@ async def save_ai_insights(
     if not db:
         raise HTTPException(status_code=500, detail="Database unavailable")
      hooks = hooks or None
-hashtags = hashtags or None
-summary = summary or None
-titles = titles or None
-final_url = final_url or None
+     hashtags = hashtags or None
+     summary = summary or None
+     titles = titles or None
+     final_url = final_url or None
 
     data = {}
     if hooks is not None:
