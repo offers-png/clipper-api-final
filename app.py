@@ -625,10 +625,6 @@ async def update_history(
     if not db:
         from fastapi import HTTPException
         raise HTTPException(500, "Database unavailable")
-     hooks = hooks or None
-     hashtags = hashtags or None
-     summary = summary or None
-     final_url = final_url or None
 
     data = {}
     if hooks is not None:
