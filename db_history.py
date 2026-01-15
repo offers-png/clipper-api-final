@@ -58,12 +58,26 @@ def insert_transcript(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    if titles is not None:
-        data["titles"] = titles
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
+    import json
+
+if titles:
+    try:
+        data["titles"] = json.loads(titles)
+    except Exception:
+        data["titles"] = [titles]
+
+   if hooks:
+    try:
+        data["hooks"] = json.loads(hooks)
+    except:
+        data["hooks"] = [hooks]
+
+if hashtags:
+    try:
+        data["hashtags"] = json.loads(hashtags)
+    except:
+        data["hashtags"] = [hashtags]
+
     if duration is not None:
         data["duration"] = duration
     if preview_url:
