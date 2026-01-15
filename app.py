@@ -619,54 +619,50 @@ async def update_history(
     titles: Optional[str] = Form(None),
 ):
     from db_history import get_db
-   
-
-    db = get_db()
-    if not db:
-        from fastapi import HTTPException
-        raise HTTPException(500, "Database unavailable")
-
-    data = {}
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
-    if summary is not None:
-        data["summary"] = summary
-    if final_url is not None:
-        data["final_url"] = final_url
-    if titles is not None:
-        data["titles"] = titles
-
-    if not data:
-        return {"ok": False, "message": "Nothing to update"}
-
     import asyncio
-    await asyncio.sleep(0.5)
-    res = db.table("history").update(data).eq("id", record_id).execute()
-
-    return {"ok": True, "updated": list(data.keys())}
-
-  @app.post("/save_ai_insights")
-  async def save_ai_insights(
-    record_id: str = Form(...),
-    hooks: str = Form(None),
-    hashtags: str = Form(None),
-    summary: str = Form(None),
-    titles: str = Form(None),
-    final_url: str = Form(None),
-):
-    from db_history import get_db
-   
+    from fastapi import HTTPException
 
     db = get_db()
     if not db:
         raise HTTPException(status_code=500, detail="Database unavailable")
-     hooks = hooks or None
-     hashtags = hashtags or None
-     summary = summary or None
-     titles = titles or None
-     final_url = final_url or None
+
+    data = {}
+    if hooks is not None:
+        data["hooks"] = hooks
+    if hashtags is not None:
+        data["hashtags"] = hashtags
+    if summary is not None:
+        data["summary"] = summary
+    if final_url is not None:
+        data["final_url"] = final_url
+    if titles is not None:
+        data["titles"] = titles
+
+    if not data:
+        return {"ok": False, "message": "Nothing to update"}
+
+    await asyncio.sleep(0.5)
+    db.table("history").update(data).eq("id", record_id).execute()
+
+    return {"ok": True, "updated": list(data.keys())}
+
+
+@app.post("/save_ai_insights")
+async def save_ai_insights(
+    record_id: str = Form(...),
+    hooks: Optional[str] = Form(None),
+    hashtags: Optional[str] = Form(None),
+    summary: Optional[str] = Form(None),
+    titles: Optional[str] = Form(None),
+    final_url: Optional[str] = Form(None),
+):
+    from db_history import get_db
+    import asyncio
+    from fastapi import HTTPException
+
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database unavailable")
 
     data = {}
     if hooks is not None:
@@ -682,7 +678,9 @@ async def update_history(
 
     if not data:
         return {"ok": False, "message": "Nothing to update"}
-import asyncio
-await asyncio.sleep(0.5)
-res = db.table("history").update(data).eq("id", record_id).execute()
+
+    await asyncio.sleep(0.5)
+    db.table("history").update(data).eq("id", record_id).execute()
+
+    return {"ok": True, "updated": list(data.keys())}
 
