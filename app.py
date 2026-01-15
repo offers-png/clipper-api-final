@@ -657,8 +657,8 @@ async def save_ai_insights(
     final_url: Optional[str] = Form(None),
 ):
     from db_history import get_db
-    import asyncio
     from fastapi import HTTPException
+    import asyncio
 
     db = get_db()
     if not db:
@@ -680,7 +680,6 @@ async def save_ai_insights(
         return {"ok": False, "message": "Nothing to update"}
 
     await asyncio.sleep(0.5)
+
     db.table("history").update(data).eq("id", record_id).execute()
-
     return {"ok": True, "updated": list(data.keys())}
-
