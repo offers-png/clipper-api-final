@@ -648,7 +648,7 @@ async def update_history(
     return {"ok": True, "updated": list(data.keys())}
 
   @app.post("/save_ai_insights")
-    async def save_ai_insights(
+  async def save_ai_insights(
     record_id: str = Form(...),
     hooks: str = Form(None),
     hashtags: str = Form(None),
@@ -682,8 +682,7 @@ async def update_history(
 
     if not data:
         return {"ok": False, "message": "Nothing to update"}
-      import asyncio
-      await asyncio.sleep(0.5)
+import asyncio
+await asyncio.sleep(0.5)
+res = db.table("history").update(data).eq("id", record_id).execute()
 
-    db.table("history").update(data).eq("id", record_id).execute()
-    return {"ok": True, "updated": list(data.keys())}
