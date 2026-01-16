@@ -65,8 +65,8 @@ if titles:
         data["titles"] = json.loads(titles)
     except Exception:
         data["titles"] = [titles]
-
-   if hooks:
+        
+if hooks:
     try:
         data["hooks"] = json.loads(hooks)
     except:
