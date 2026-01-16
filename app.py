@@ -20,6 +20,9 @@ APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
+if not client:
+    return {"ok": False, "error": "OpenAI API key not configured"}
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 client = OpenAI() if OPENAI_API_KEY else None
 
@@ -450,17 +453,18 @@ async def transcribe_audio(
             )
 
         text = tr.strip() if isinstance(tr, str) else str(tr)
-  
-                # ✅ Save to database
+
+        # ✅ Save to database
         try:
             db_success = insert_transcript(
-                user_id=user_id,
-                source_name=source_name or "unknown",
-                transcript=text,
-                duration=None,
-                preview_url=None,
-                final_url=None,
-            )
+               user_id=user_id,
+               source_name=source_name or "unknown",
+               transcript=text,
+               duration=None,
+               preview_url=None,
+               final_url=None,
+    )
+
 
             if db_success:
                 print(f"✅ Transcript saved to database for user: {user_id}")
@@ -498,6 +502,12 @@ async def ask_ai(request: Request):
 
     if not prompt:
         return JSONResponse({"error": "Prompt is required"}, status_code=400)
+
+    if not client:
+    return {"ok": False, "error": "OpenAI API key not configured"}
+
+    if not client:
+    return {"ok": False, "error": "OpenAI API key not configured"}
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
