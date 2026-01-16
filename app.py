@@ -503,8 +503,6 @@ async def ask_ai(request: Request):
     if not prompt:
         return JSONResponse({"error": "Prompt is required"}, status_code=400)
 
-    if not client:
-    return {"ok": False, "error": "OpenAI API key not configured"}
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
