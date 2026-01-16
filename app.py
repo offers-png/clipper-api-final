@@ -506,9 +506,6 @@ async def ask_ai(request: Request):
     if not client:
     return {"ok": False, "error": "OpenAI API key not configured"}
 
-    if not client:
-    return {"ok": False, "error": "OpenAI API key not configured"}
-
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     messages = [
