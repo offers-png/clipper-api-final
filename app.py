@@ -20,8 +20,6 @@ APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
-if not client:
-    return {"ok": False, "error": "OpenAI API key not configured"}
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 client = OpenAI() if OPENAI_API_KEY else None
