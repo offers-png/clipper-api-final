@@ -35,13 +35,13 @@ def sb():
         return None
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-BASE_DIR   = "/data"
+BASE_DIR   = "/tmp/clipforge"
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 PREVIEW_DIR= os.path.join(BASE_DIR, "previews")
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 THUMB_DIR  = os.path.join(BASE_DIR, "thumbs")
 TMP_DIR    = "/tmp"
-for d in (UPLOAD_DIR, PREVIEW_DIR, EXPORT_DIR, THUMB_DIR, TMP_DIR):
+for d in (UPLOAD_DIR, PREVIEW_DIR, EXPORT_DIR, THUMB_DIR):
     os.makedirs(d, exist_ok=True)
 
 app.mount("/media/previews", StaticFiles(directory=PREVIEW_DIR), name="previews")
@@ -358,8 +358,8 @@ async def transcribe_clip(request: Request):
     filename = clip_url.split("/")[-1]
 
     # Build possible paths
-    preview_path = f"/data/previews/{filename}"
-    final_path   = f"/data/exports/{filename}"
+    preview_path = os.path.join(PREVIEW_DIR, filename)
+    final_path   = os.path.join(EXPORT_DIR, filename)
 
     # Decide which file exists
     if os.path.exists(final_path):
@@ -526,7 +526,7 @@ async def ask_ai(request: Request):
 @app.post("/data-upload")
 async def data_upload(file: UploadFile = File(...)):
     try:
-        dest_path = "/data/cookies.txt"
+        dest_path = "/tmp/cookies.txt"
         contents = await file.read()
 
         if not contents.strip():
@@ -558,8 +558,8 @@ def resolve_local_media_path(url: str):
 
     for prefix, folder in [
         ("/media/previews/", PREVIEW_DIR),
-        ("/media/exports/", EXPORT_DIR),
-        ("/media/thumbs/", THUMB_DIR),
+        ("/media/exports/",  EXPORT_DIR),
+        ("/media/thumbs/",   THUMB_DIR),
     ]:
         if prefix in url:
             filename = url.split(prefix)[-1]
