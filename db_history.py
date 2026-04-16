@@ -69,4 +69,6 @@ def insert_transcript(
         data["final_url"] = final_url
 
     res = db.table("history").insert(data).execute()
-    return bool(res.data)
+    if res.data:
+        return res.data[0].get("id")  # return the new record's UUID
+    return None

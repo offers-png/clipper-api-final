@@ -337,10 +337,11 @@ async def clip_multi(
             zip_url = abs_url(request, f"/media/exports/{zip_name}")
 
         # Save clip job to history
+        record_id = None
         try:
             source_name = file.filename if file else (url or "unknown")
             preview_urls = [r["preview_url"] for r in results if r.get("preview_url")]
-            insert_transcript(
+            record_id = insert_transcript(
                 user_id=user_id,
                 source_name=source_name,
                 transcript=f"Clipped {len(results)} segment(s): " + ", ".join(
@@ -351,7 +352,7 @@ async def clip_multi(
         except Exception as db_err:
             print(f"⚠️ History save failed (clip_multi): {db_err}")
 
-        return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
+        return JSONResponse({"ok": True, "items": results, "zip_url": zip_url, "record_id": record_id})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
     finally:
@@ -471,29 +472,27 @@ async def transcribe_audio(
         text = tr.strip() if isinstance(tr, str) else str(tr)
 
         # ✅ Save to database
+        record_id = None
         try:
-            db_success = insert_transcript(
+            record_id = insert_transcript(
                user_id=user_id,
                source_name=source_name or "unknown",
                transcript=text,
                duration=None,
                preview_url=None,
                final_url=None,
-    )
-
-
-            if db_success:
-                print(f"✅ Transcript saved to database for user: {user_id}")
+            )
+            if record_id:
+                print(f"✅ Transcript saved to database for user: {user_id}, id: {record_id}")
             else:
                 print(f"⚠️ Failed to save transcript to database for user: {user_id}")
 
         except Exception as db_err:
             print(f"❌ Database error: {str(db_err)}")
-            db_success = False
 
     # Don't fail the whole request if DB save fails
 
-        return JSONResponse({"ok": True, "text": text, "saved_to_db": db_success if 'db_success' in locals() else False})
+        return JSONResponse({"ok": True, "text": text, "saved_to_db": bool(record_id), "record_id": record_id})
 
     except Exception as e:
         return JSONResponse(
@@ -629,6 +628,16 @@ async def ai_chat(request: Request):
     reply_text = completion.choices[0].message.content
 
     return {"ok": True, "reply": reply_text}
+
+@app.get("/history/{user_id}")
+async def get_history(user_id: str, limit: int = 10):
+    from db_history import get_db
+    db = get_db()
+    if not db:
+        return JSONResponse({"ok": False, "error": "Database unavailable"}, 500)
+    res = db.table("history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    return {"ok": True, "history": res.data or []}
+
 
 @app.post("/history/update")
 async def update_history(
