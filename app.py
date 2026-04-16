@@ -54,6 +54,8 @@ app.add_middleware(
         "https://clipper-frontend.onrender.com",
         "https://ptsel-frontend.onrender.com",
         "https://clipper-api-final-1.onrender.com",
+        "https://clipforge.dealdily.com",
+        "https://clipforge-app.netlify.app",
         "http://localhost:5173",
         "capacitor://localhost",
         "http://localhost"
