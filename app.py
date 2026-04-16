@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from db_history import insert_transcript
 from supabase import create_client, Client
+from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
@@ -181,6 +182,43 @@ def make_thumbnail(source_path: str, t_start: str, out_path: str):
 def health_get():
     return {"ok": True, "service": APP_TITLE, "version": APP_VERSION}
 
+
+# ── Stripe endpoints ──────────────────────────────────────────────────────────
+
+@app.post("/billing/checkout")
+async def billing_checkout(request: Request):
+    form = await request.form()
+    email = form.get("email", "").strip()
+    if not email:
+        return JSONResponse({"ok": False, "error": "email required"}, 400)
+    try:
+        url = create_checkout_session(email)
+        return {"ok": True, "url": url}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, 500)
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    payload    = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+    result = handle_webhook(payload, sig_header)
+    if not result.get("ok"):
+        return JSONResponse(result, 400)
+    return result
+
+
+@app.post("/billing/check-access")
+async def billing_check_access(request: Request):
+    form = await request.form()
+    email = form.get("email", "").strip()
+    if not email:
+        return JSONResponse({"ok": False, "error": "email required"}, 400)
+    result = check_clip_access(email)
+    return {"ok": True, **result}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.head("/")
 def health_head():
     return Response(status_code=200)
@@ -286,6 +324,20 @@ async def clip_multi(
 ):
     tmp = None
     try:
+        # ── Access gate ──────────────────────────────────────────────────────
+        if user_id and user_id != "anonymous":
+            access = check_clip_access(user_id)
+            if not access.get("allowed"):
+                reason = access.get("reason", "unknown")
+                msg = {
+                    "trial_expired": "Your 7-day free trial has ended. Upgrade to keep clipping.",
+                    "daily_limit":   f"You've used all {3} free clips for today. Upgrade for unlimited clips, or come back tomorrow.",
+                    "cancelled":     "Your subscription is cancelled. Reactivate to continue.",
+                    "expired":       "Your subscription has expired. Upgrade to continue.",
+                }.get(reason, "Upgrade required to continue clipping.")
+                return JSONResponse({"ok": False, "error": msg, "upgrade": True}, 403)
+        # ─────────────────────────────────────────────────────────────────────
+
         if file is not None:
             src = os.path.join(UPLOAD_DIR, safe(file.filename))
             with open(src, "wb") as f:
@@ -351,6 +403,13 @@ async def clip_multi(
             )
         except Exception as db_err:
             print(f"⚠️ History save failed (clip_multi): {db_err}")
+
+        # Record usage for billing
+        if user_id and user_id != "anonymous":
+            try:
+                record_clip_used(user_id)
+            except Exception as e:
+                print(f"⚠️ record_clip_used failed: {e}")
 
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url, "record_id": record_id})
     except Exception as e:
