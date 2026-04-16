@@ -282,6 +282,7 @@ async def clip_multi(
     wm_text: str   = Form("@ClipForge"),
     preview_480: str = Form("1"),
     final_1080: str  = Form("0"),
+    user_id: str = Form(default="anonymous"),
 ):
     tmp = None
     try:
@@ -334,6 +335,21 @@ async def clip_multi(
                         if os.path.exists(final_fp):
                             z.write(final_fp, arcname=os.path.basename(final_fp))
             zip_url = abs_url(request, f"/media/exports/{zip_name}")
+
+        # Save clip job to history
+        try:
+            source_name = file.filename if file else (url or "unknown")
+            preview_urls = [r["preview_url"] for r in results if r.get("preview_url")]
+            insert_transcript(
+                user_id=user_id,
+                source_name=source_name,
+                transcript=f"Clipped {len(results)} segment(s): " + ", ".join(
+                    f"{r['start']}→{r['end']}" for r in results
+                ),
+                preview_url=preview_urls[0] if preview_urls else None,
+            )
+        except Exception as db_err:
+            print(f"⚠️ History save failed (clip_multi): {db_err}")
 
         return JSONResponse({"ok": True, "items": results, "zip_url": zip_url})
     except Exception as e:
