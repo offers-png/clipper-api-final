@@ -111,7 +111,14 @@ def seconds_to_text(x: float) -> str:
     s = x % 60
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-def ffprobe_duration(path: str) -> Optional[float]:
+def friendly_err(err: str, context: str = "Processing") -> str:
+    """Extract just the last meaningful error line from ffmpeg output."""
+    lines = [l.strip() for l in err.splitlines() if l.strip()]
+    # Find lines with actual error content, skip version/config spam
+    error_lines = [l for l in lines if any(k in l.lower() for k in ["error", "invalid", "no such", "failed", "cannot", "unable"])]
+    if error_lines:
+        return f"{context} failed: {error_lines[-1][:120]}"
+    return f"{context} failed. Check your video file and try again."
     try:
         code, out = run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -176,7 +183,7 @@ def make_thumbnail(source_path: str, t_start: str, out_path: str):
         "-y", out_path
     ], timeout=30)
     if code != 0 or not os.path.exists(out_path):
-        raise RuntimeError(f"thumbnail failed: {err[:300]}")
+        raise RuntimeError(friendly_err(err, "Thumbnail"))
 
 @app.get("/")
 def health_get():
@@ -260,7 +267,7 @@ async def build_clip(
                 "-movflags","+faststart","-y", prev_out
             ], timeout=600)
             if code != 0 or not os.path.exists(prev_out):
-                raise RuntimeError(f"Preview failed: {err[:500]}")
+                raise RuntimeError(friendly_err(err, "Clip preview"))
     elif want_preview and watermark_text:
         code, err = run([
             "ffmpeg","-hide_banner","-loglevel","error",
@@ -271,7 +278,7 @@ async def build_clip(
             "-movflags","+faststart","-y", prev_out
         ], timeout=900)
         if code != 0 or not os.path.exists(prev_out):
-            raise RuntimeError(f"Preview watermark failed: {err[:500]}")
+            raise RuntimeError(friendly_err(err, "Clip preview"))
 
     # final
     if want_final:
@@ -284,7 +291,7 @@ async def build_clip(
             "-movflags","+faststart","-y", final_out
         ], timeout=1800)
         if code != 0 or not os.path.exists(final_out):
-            raise RuntimeError(f"Final export failed: {err[:500]}")
+            raise RuntimeError(friendly_err(err, "Final export"))
 
     # thumbnail
     thumb_name = f"{base}_{start.replace(':','-')}_{stamp}.jpg"
@@ -454,7 +461,7 @@ async def transcribe_clip(request: Request):
     ], timeout=60)
 
     if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": f"FFmpeg failed: {err}"}
+        return {"ok": False, "error": friendly_err(err, "Transcription")}
 
     # Transcribe with Whisper
     with open(mp3_path, "rb") as a:
@@ -516,7 +523,7 @@ async def transcribe_audio(
 
         if code != 0 or not os.path.exists(mp3_path):
             return JSONResponse(
-                {"ok": False, "error": f"FFmpeg failed: {err[:300]}"},
+                {"ok": False, "error": friendly_err(err, "Audio conversion")},
                 status_code=500,
             )
 
