@@ -143,6 +143,9 @@ def create_checkout_session(email: str) -> str:
         payment_method_types=["card"],
         line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
         mode="subscription",
+
+        allow_promotion_codes=True,
+        
         subscription_data={
             "trial_period_days": TRIAL_DAYS,
         },
