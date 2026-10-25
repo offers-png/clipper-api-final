@@ -2,9 +2,10 @@
 import os
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
+from .flags import studios_enabled
 
 def install(host:FastAPI,local_only=None,access=None):
-    if os.environ.get('CLIPFORGE_ENABLE_STUDIOS')!='1':return False
+    if not studios_enabled():return False
     from .app import app
     from .access import Access,StudioAccess,wrap_pools
     from .backend.resource_paths import DATA

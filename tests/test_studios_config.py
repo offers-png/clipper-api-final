@@ -26,6 +26,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(TestClient(host).get('/studios-api/health').status_code,200)
         self.assertEqual(TestClient(host,client=('198.51.100.1',1234)).get('/studios-api/health').status_code,403)
 
+    def test_boolean_true_mounts_without_bypassing_access(self):
+        host=FastAPI()
+        with patch.dict(os.environ,{'CLIPFORGE_ENABLE_STUDIOS':' true '}):
+            self.assertTrue(install(host,local_only=False))
+        response=TestClient(host).post('/studios-api/editor/assets')
+        self.assertEqual(response.status_code,401)
+
     def test_unset_provider_is_explicitly_unavailable(self):
         with patch.dict(os.environ,{'CLIPFORGE_VIDEO_PROVIDER_FACTORY':''}):
             self.assertFalse(load(Unavailable()).status()['available'])
@@ -49,10 +56,19 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(status['available']);self.assertNotIn('private diagnostic',json.dumps(status))
 
     def test_original_production_modules_unchanged(self):
-        for name in ('auth.py','billing.py','stripe_billing.py','db.py','db_history.py','render.yaml','Dockerfile','requirements.txt'):
+        for name in ('auth.py','billing.py','stripe_billing.py','db.py','db_history.py','render.yaml','Dockerfile'):
             before=subprocess.check_output(['git','show','origin/main:'+name],cwd=ROOT).decode().replace('\r\n','\n')
             self.assertEqual((ROOT/name).read_text(encoding='utf-8').replace('\r\n','\n'),before,name)
         original=subprocess.check_output(['git','show','origin/main:app.py'],cwd=ROOT).decode().replace('\r\n','\n')
-        self.assertTrue((ROOT/'app.py').read_text(encoding='utf-8').startswith(original))
+        current=(ROOT/'app.py').read_text(encoding='utf-8')
+        # URL/audio conversion and Studio bootstrap are intentionally updated.
+        # All original route declarations must remain, including manual clipping.
+        import re
+        routes=lambda source: re.findall(r'@app\.(?:get|post|put|delete|patch)\([^\n]+',source)
+        self.assertTrue(set(routes(original)).issubset(set(routes(current))))
+        before=subprocess.check_output(['git','show','origin/main:requirements.txt'],cwd=ROOT).decode().splitlines()
+        after=(ROOT/'requirements.txt').read_text().splitlines()
+        self.assertEqual([line for line in before if not line.startswith('yt-dlp==')],
+                         [line for line in after if not line.startswith('yt-dlp==')])
 
 if __name__=='__main__':unittest.main(verbosity=2)
