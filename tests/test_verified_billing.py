@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from billing_identity import billing_actor, checkout_reference
 from billing_state import verified_state, VerificationError
+from url_media import MediaError
 import stripe_billing as billing
 
 
@@ -97,6 +98,13 @@ class StateTests(unittest.TestCase):
     def test_trial_is_not_paid(self):
         self.subscription.update(status='trialing',trial_end=int(time.time())+3600)
         result=self.state();self.assertEqual(result['plan'],'trial');self.assertFalse(result['payment_verified'])
+
+    def test_existing_stripe_trial_status_is_returned_without_paid_access(self):
+        self.subscription.update(status='trialing',trial_end=int(time.time())+3600)
+        with patch.object(billing,'stripe',self.stripe),patch.object(billing,'STRIPE_SECRET_KEY','fixture'),patch.object(billing,'STRIPE_PRICE_ID','price_fixture'),patch.object(billing,'_db',return_value=self.db),patch.object(billing,'get_or_create_user',return_value=self.user):
+            access=billing.check_clip_access(self.user['email'])
+        self.assertEqual(access['plan'],'trial');self.assertTrue(access['existing_subscription'])
+        self.assertEqual(access['subscription_status'],'trialing');self.assertFalse(access['payment_verified'])
 
     def test_checkout_reference_cannot_cross_accounts(self):
         self.stripe.checkout.Session.retrieve.return_value=dict(mode='subscription',status='complete',customer='cus_fixture')
@@ -214,7 +222,7 @@ class IdentityTests(unittest.TestCase):
     def test_original_billing_routes_ignore_spoofed_email(self):
         source=Path(__file__).resolve().parents[1]/'app.py'
         nodes=ast.parse(source.read_text(encoding='utf-8')).body
-        scope=dict(Request=Request,JSONResponse=JSONResponse,VerificationError=VerificationError,checkout_reference=checkout_reference,
+        scope=dict(Request=Request,JSONResponse=JSONResponse,VerificationError=VerificationError,checkout_reference=checkout_reference,asyncio=asyncio,
             billing_actor=Mock(return_value={'email':'signed-in@example.invalid'}),
             check_clip_access=Mock(return_value={'allowed':True,'plan':'active','payment_verified':True}),
             create_checkout_session=Mock(return_value='https://checkout.example.invalid/fixture'))
@@ -235,7 +243,7 @@ class IdentityTests(unittest.TestCase):
         node=next(n for n in ast.parse(source.read_text(encoding='utf-8')).body if isinstance(n,ast.AsyncFunctionDef) and n.name=='clip_multi')
         node.decorator_list=[]
         scope=dict(Request=Request,UploadFile=UploadFile,File=File,Form=Form,JSONResponse=JSONResponse,
-            os=os,json=json,asyncio=asyncio,UPLOAD_DIR=uploads,safe=lambda name:name,
+            os=os,json=json,asyncio=asyncio,UPLOAD_DIR=uploads,MediaError=MediaError,safe=lambda name:name,
             billing_actor=Mock(return_value={'email':'signed-in@example.invalid'}),
             check_clip_access=Mock(return_value=access),insert_transcript=Mock(return_value=None),
             record_clip_used=Mock(),seconds_to_text=lambda seconds:str(seconds),abs_url=lambda request,path:path,
@@ -270,3 +278,19 @@ class IdentityTests(unittest.TestCase):
             scope['billing_actor'].side_effect=HTTPException(401,'Unauthorized')
             self.assertEqual(client.post('/clip_multi',data={'sections':'[]','user_id':'anonymous'}).status_code,401)
             scope['check_clip_access'].assert_not_called();scope['build_clip'].assert_not_called()
+
+    def test_original_url_download_error_is_422_without_rendering_or_charging(self):
+        with tempfile.TemporaryDirectory() as uploads:
+            client,scope=self.manual_client(uploads,dict(allowed=True,plan='active'))
+            scope['download_to_tmp']=Mock(side_effect=MediaError('Host blocked download'))
+            response=client.post('/clip_multi',data={'sections':'[{"start":"0","end":"1"}]','url':'https://www.tiktok.com/@fixture/video/1'})
+            self.assertEqual(response.status_code,422,response.text)
+            self.assertFalse(response.json()['upgrade'])
+            scope['build_clip'].assert_not_called();scope['record_clip_used'].assert_not_called()
+
+    def test_existing_stripe_trial_at_daily_limit_never_requests_new_subscription(self):
+        with tempfile.TemporaryDirectory() as uploads:
+            client,scope=self.manual_client(uploads,dict(allowed=False,plan='trial',reason='daily_limit',existing_subscription=True,subscription_status='trialing'))
+            response=client.post('/clip_multi',data={'sections':'[]'})
+            self.assertEqual(response.status_code,409);self.assertFalse(response.json()['upgrade'])
+            scope['build_clip'].assert_not_called();scope['record_clip_used'].assert_not_called()
