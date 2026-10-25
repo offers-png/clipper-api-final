@@ -1,0 +1,35 @@
+name: Backend Docker build verification
+
+on:
+  push:
+    branches: [fix/docker-bookworm-20261025]
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - requirements.txt
+      - .github/workflows/docker-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build fresh image (no push or deployment)
+        run: docker build --pull --no-cache --progress=plain -t clipforge-backend:verify .
+      - name: Check Python, dependencies, FFmpeg and codecs
+        run: |
+          docker run --rm clipforge-backend:verify python -c "import sys; assert sys.version_info[:2] == (3, 11); import fastapi, uvicorn, openai, supabase, stripe; print('Python 3.11 and application dependency imports OK')"
+          docker run --rm clipforge-backend:verify python -m pip check
+          docker run --rm clipforge-backend:verify dpkg-query -W ffmpeg libavcodec-extra libopus0
+          docker run --rm clipforge-backend:verify ffmpeg -version
+      - name: Encode and inspect a test MP4 inside the image
+        run: |
+          docker run --rm clipforge-backend:verify sh -ec '
+            ffmpeg -v error -y -f lavfi -i testsrc2=size=128x72:rate=24 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 1 -c:v libx264 -pix_fmt yuv420p -c:a aac /tmp/docker-smoke.mp4
+            ffprobe -v error -show_entries stream=codec_name -show_entries format=duration -of json /tmp/docker-smoke.mp4
+          '
