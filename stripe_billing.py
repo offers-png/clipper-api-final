@@ -3,6 +3,7 @@ import os
 import stripe
 from datetime import datetime, timezone, date
 from supabase import create_client
+from billing_state import verified_state, VerificationError, normalized
 
 STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -31,7 +32,12 @@ def get_or_create_user(email: str) -> dict:
     db = _db()
     if not db:
         return {}
-    res = db.table("clipforge_users").select("*").eq("email", email).limit(1).execute()
+    email = email.strip()
+    # Case-insensitive exact matching; escape LIKE metacharacters in email addresses.
+    pattern = email.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    res = db.table("clipforge_users").select("*").ilike("email", pattern).limit(2).execute()
+    if len(res.data or []) > 1:
+        raise VerificationError('billing_account_ambiguous')
     if res.data:
         return res.data[0]
     # Create fresh trial user
@@ -54,30 +60,55 @@ def _reset_daily_if_needed(user: dict, db) -> dict:
 
 # ── Access check ──────────────────────────────────────────────────────────────
 
-def check_clip_access(email: str) -> dict:
-    """
-    Returns {"allowed": bool, "reason": str, "plan": str,
-             "clips_today": int, "clips_remaining": int | None}
-    """
-    db = _db()
-    if not db:
-        # If DB is down, allow (fail open) so we don't block users
-        return {"allowed": True, "reason": "db_unavailable", "plan": "unknown",
-                "clips_today": 0, "clips_remaining": None}
+def reconcile_user(user, db, checkout_id=None, customer_hint=None):
+    if not STRIPE_SECRET_KEY:
+        raise VerificationError('billing_configuration_unavailable')
+    try:
+        lookup = {**user, 'stripe_customer_id':customer_hint} if customer_hint else user
+        state = verified_state(lookup, stripe, STRIPE_PRICE_ID, checkout_id)
+    except VerificationError:
+        raise
+    except Exception:
+        raise VerificationError('billing_verification_unavailable') from None
+    fields = {key:value for key,value in state.items()
+              if key in ('plan','stripe_customer_id','stripe_subscription_id','trial_end')}
+    if any(user.get(key) != value for key,value in fields.items()):
+        result = db.table('clipforge_users').update(fields).eq('email', user['email']).execute()
+        if not result.data:
+            raise VerificationError('billing_record_not_updated')
+    return {**user, **state}
 
-    user = get_or_create_user(email)
-    if not user:
-        return {"allowed": False, "reason": "user_not_found", "plan": "none",
-                "clips_today": 0, "clips_remaining": 0}
 
-    user = _reset_daily_if_needed(user, db)
+def check_clip_access(email: str, checkout_id=None) -> dict:
+    """Re-check Stripe on each authenticated access; errors never grant access."""
+    try:
+        db = _db()
+        if not db:
+            raise VerificationError('db_unavailable')
+        user = get_or_create_user(email)
+        if not user:
+            raise VerificationError('user_not_found')
+        user = reconcile_user(user, db, checkout_id)
+    except Exception as error:
+        reason = str(error) if isinstance(error, VerificationError) else 'billing_verification_unavailable'
+        return {'allowed':False, 'reason':reason, 'plan':'unknown', 'upgrade':False,
+                'clips_today':0, 'clips_remaining':0, 'payment_verified':False}
+
+    email = user['email']
     plan = user.get("plan", "trial")
     now  = datetime.now(timezone.utc)
 
     # ── Active paid subscriber → unlimited ───────────────────────────────────
     if plan == "active":
         return {"allowed": True, "reason": "paid", "plan": "active",
-                "clips_today": user["clips_today"], "clips_remaining": None}
+                "clips_today": user.get("clips_today", 0), "clips_remaining": None,
+                "payment_verified": True, "upgrade": False}
+
+    try:
+        user = _reset_daily_if_needed(user, db)
+    except Exception:
+        return {'allowed':False, 'reason':'billing_verification_unavailable', 'plan':'unknown',
+                'upgrade':False, 'clips_today':0, 'clips_remaining':0, 'payment_verified':False}
 
     # ── Trial ────────────────────────────────────────────────────────────────
     if plan == "trial":
@@ -125,7 +156,14 @@ def record_clip_used(email: str):
 
 def create_checkout_session(email: str) -> str:
     """Create a Stripe Checkout session with 7-day trial. Returns the URL."""
-    user = get_or_create_user(email)
+    access = check_clip_access(email)
+    if access.get('plan') == 'active' and access.get('payment_verified'):
+        raise VerificationError('already_subscribed')
+    if access.get('plan') in ('unknown', 'payment_pending'):
+        raise VerificationError('billing_verification_required')
+    user = reconcile_user(get_or_create_user(email), _db())
+    if user.get('existing_subscription'):
+        raise VerificationError('existing_subscription_requires_review')
     customer_id = user.get("stripe_customer_id")
 
     # Reuse existing Stripe customer or create new
@@ -149,7 +187,7 @@ def create_checkout_session(email: str) -> str:
         subscription_data={
             "trial_period_days": TRIAL_DAYS,
         },
-        success_url=f"{FRONTEND_URL}/clipper?upgrade=success",
+        success_url=f"{FRONTEND_URL}/clipper?upgrade=success&session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{FRONTEND_URL}/clipper?upgrade=cancelled",
         metadata={"email": email},
     )
@@ -159,45 +197,45 @@ def create_checkout_session(email: str) -> str:
 # ── Stripe Webhook handler ────────────────────────────────────────────────────
 
 def handle_webhook(payload: bytes, sig_header: str) -> dict:
+    if not STRIPE_WEBHOOK_SECRET or not sig_header:
+        return {'ok':False, 'error':'invalid_signature', 'status':400}
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
-        return {"ok": False, "error": "invalid_signature"}
-
-    db = _db()
-    if not db:
-        return {"ok": False, "error": "db_unavailable"}
-
-    etype = event["type"]
-    data  = event["data"]["object"]
-
-    if etype == "customer.subscription.created":
-        _sync_subscription(data, db, "active")
-
-    elif etype == "customer.subscription.updated":
-        status = data.get("status")
-        plan = "active" if status in ("active", "trialing") else "cancelled"
-        _sync_subscription(data, db, plan)
-
-    elif etype in ("customer.subscription.deleted", "customer.subscription.paused"):
-        _sync_subscription(data, db, "cancelled")
-
-    elif etype == "invoice.payment_failed":
-        customer_id = data.get("customer")
-        if customer_id:
-            db.table("clipforge_users").update({"plan": "expired"}).eq(
-                "stripe_customer_id", customer_id
-            ).execute()
-
-    return {"ok": True, "handled": etype}
-
-
-def _sync_subscription(sub_data: dict, db, plan: str):
-    customer_id = sub_data.get("customer")
-    sub_id      = sub_data.get("id")
-    if not customer_id:
-        return
-    db.table("clipforge_users").update({
-        "plan": plan,
-        "stripe_subscription_id": sub_id,
-    }).eq("stripe_customer_id", customer_id).execute()
+    except (stripe.error.SignatureVerificationError, ValueError):
+        return {'ok':False, 'error':'invalid_signature', 'status':400}
+    etype = event['type']
+    supported = {'checkout.session.completed', 'checkout.session.async_payment_succeeded',
+                 'invoice.paid', 'invoice.payment_succeeded', 'invoice.payment_failed',
+                 'customer.subscription.created', 'customer.subscription.updated',
+                 'customer.subscription.deleted', 'customer.subscription.paused',
+                 'customer.subscription.resumed'}
+    if etype not in supported:
+        return {'ok':True, 'handled':'ignored'}
+    try:
+        db = _db()
+        if not db:
+            raise VerificationError('db_unavailable')
+        obj = event['data']['object']
+        cid = obj.get('customer')
+        if not cid:
+            raise VerificationError('billing_customer_missing')
+        from billing_state import identifier
+        cid = identifier(cid)
+        customer = stripe.Customer.retrieve(cid)
+        if customer.get('deleted') or not customer.get('email'):
+            raise VerificationError('billing_account_mismatch')
+        rows = db.table('clipforge_users').select('*').eq('stripe_customer_id',cid).limit(2).execute().data or []
+        if not rows:
+            # A verified event may arrive before the checkout mapping was saved.
+            # Match an existing account; never invent a user from webhook metadata.
+            pattern = customer['email'].replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+            rows = db.table('clipforge_users').select('*').ilike('email',pattern).limit(2).execute().data or []
+        if len(rows)!=1 or normalized(rows[0]['email'])!=normalized(customer['email']):
+            raise VerificationError('billing_account_not_linked')
+        # Retrieve CURRENT Stripe state for duplicate/out-of-order deliveries.
+        # Do not apply stale event payloads or mark subscription.created as paid.
+        reconcile_user(rows[0], db, customer_hint=cid)
+        return {'ok':True, 'handled':etype}
+    except Exception:
+        # Non-2xx asks Stripe to retry; do not acknowledge a failed/zero-row update.
+        return {'ok':False, 'error':'billing_sync_failed', 'status':503}

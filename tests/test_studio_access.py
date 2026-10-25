@@ -92,6 +92,16 @@ class AccessTests(unittest.TestCase):
   self.access.access=lambda _:dict(allowed=True,plan='unknown',reason='db_unavailable')
   aid=self.upload()
   self.assertEqual(self.http.post('/studios-api/editor/jobs',headers=self.headers(),json={'segments':[{'asset_id':aid}]}).status_code,503)
+ def test_verification_outage_does_not_request_upgrade(self):
+  self.access.access=lambda _:dict(allowed=False,plan='unknown',reason='billing_verification_unavailable')
+  aid=self.upload()
+  response=self.http.post('/studios-api/editor/jobs',headers=self.headers(),json={'segments':[{'asset_id':aid}]})
+  self.assertEqual(response.status_code,503);self.assertIn('do not pay again',response.text)
+ def test_pending_subscription_does_not_request_second_subscription(self):
+  self.access.access=lambda _:dict(allowed=False,plan='payment_pending',reason='payment_pending')
+  aid=self.upload()
+  response=self.http.post('/studios-api/editor/jobs',headers=self.headers(),json={'segments':[{'asset_id':aid}]})
+  self.assertEqual(response.status_code,409);self.assertIn('Do not start another subscription',response.text)
  def test_core_starts_without_optional_speech_dependencies(self):
   script='''import importlib.abc, sys
 class BlockOptional(importlib.abc.MetaPathFinder):

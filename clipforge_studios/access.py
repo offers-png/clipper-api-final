@@ -110,7 +110,9 @@ class Access:
         with self.lock:
             try:access=self.access(actor['email'])
             except Exception:raise HTTPException(503,'Clip access could not be verified') from None
-            if access.get('reason')=='db_unavailable' or access.get('plan') not in ('active','trial'):raise HTTPException(503 if access.get('reason')=='db_unavailable' else 403,'Clip access is unavailable or an upgrade is required')
+            if access.get('reason')=='db_unavailable' or access.get('plan')=='unknown':raise HTTPException(503,'Subscription verification is unavailable. Retry; do not pay again.')
+            if access.get('plan')=='payment_pending':raise HTTPException(409,'Your existing subscription needs attention. Do not start another subscription.')
+            if access.get('plan') not in ('active','trial'):raise HTTPException(403,'Clip access is unavailable or an upgrade is required')
             if not access.get('allowed'):raise HTTPException(403,'Upgrade required or daily clip limit reached')
             day=date.today().isoformat();rid=uuid.uuid4().hex
             with self.db() as db:

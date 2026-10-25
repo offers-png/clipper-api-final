@@ -43,7 +43,10 @@ def user(request:Request):
 @app.post('/auth/v1/logout')
 def logout():return {}
 @app.post('/billing/check-access')
-def billing():return access(USER['email'])
+def billing(request:Request):
+ actor=authenticate(request.headers.get('authorization','')[7:])
+ if state.get('verification_outage'):return JSONResponse({'ok':False,'error':'Local fixture: verification unavailable. Do not pay again.'},503)
+ return {'ok':True,**access(actor['email']),'payment_verified':state['plan']=='active'}
 @app.post('/__test/plan')
 async def plan(request:Request):state.update(await request.json());return {'ok':True}
 @app.get('/__test/status')

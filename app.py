@@ -18,6 +18,8 @@ from stripe_billing import check_clip_access, record_clip_used, create_checkout_
 import requests
 from url_media import download, audio_to_mp3, MediaError
 from clipforge_studios.flags import studios_enabled
+from billing_identity import billing_actor
+from billing_state import VerificationError
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
@@ -166,15 +168,16 @@ def health_get():
 
 @app.post("/billing/checkout")
 async def billing_checkout(request: Request):
-    form = await request.form()
-    email = form.get("email", "").strip()
-    if not email:
-        return JSONResponse({"ok": False, "error": "email required"}, 400)
+    actor = billing_actor(request)
     try:
-        url = create_checkout_session(email)
-        return {"ok": True, "url": url}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, 500)
+        url = create_checkout_session(actor['email'])
+        return {'ok':True, 'url':url}
+    except VerificationError as error:
+        if str(error)=='already_subscribed':
+            return {'ok':True, 'already_subscribed':True}
+        return JSONResponse({'ok':False, 'error':'Subscription verification is required before checkout. No new subscription was created.'},409)
+    except Exception:
+        return JSONResponse({'ok':False, 'error':'Checkout is temporarily unavailable. No payment was initiated.'},503)
 
 
 @app.post("/billing/webhook")
@@ -183,18 +186,21 @@ async def billing_webhook(request: Request):
     sig_header = request.headers.get("stripe-signature", "")
     result = handle_webhook(payload, sig_header)
     if not result.get("ok"):
-        return JSONResponse(result, 400)
+        return JSONResponse(result, result.get("status", 400))
     return result
 
 
 @app.post("/billing/check-access")
 async def billing_check_access(request: Request):
+    actor = billing_actor(request)
     form = await request.form()
-    email = form.get("email", "").strip()
-    if not email:
-        return JSONResponse({"ok": False, "error": "email required"}, 400)
-    result = check_clip_access(email)
-    return {"ok": True, **result}
+    session_id = form.get('session_id') or None
+    if session_id and (not isinstance(session_id,str) or not session_id.startswith('cs_') or len(session_id)>255):
+        return JSONResponse({'ok':False, 'error':'Invalid checkout reference'},400)
+    result = check_clip_access(actor['email'], checkout_id=session_id)
+    if result.get('plan')=='unknown':
+        return JSONResponse({'ok':False, **result, 'error':'We could not verify your subscription. Retry verification; do not pay again.'},503)
+    return {'ok':True, **result}
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -301,12 +307,17 @@ async def clip_multi(
     final_1080: str  = Form("0"),
     user_id: str = Form(default="anonymous"),
 ):
+    actor = billing_actor(request)
+    user_id = actor['email']
     tmp = None
     try:
         # ── Access gate ──────────────────────────────────────────────────────
         if user_id and user_id != "anonymous":
             access = check_clip_access(user_id)
             if not access.get("allowed"):
+                if access.get('plan') in ('unknown', 'payment_pending'):
+                    return JSONResponse({'ok':False, 'upgrade':False,
+                        'error':'Your subscription needs verification. Please retry or contact support; do not pay again.'},503 if access.get('plan')=='unknown' else 409)
                 reason = access.get("reason", "unknown")
                 msg = {
                     "trial_expired": "Your 7-day free trial has ended. Upgrade to keep clipping.",
