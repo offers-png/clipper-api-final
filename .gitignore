@@ -1,1 +1,16 @@
 service-account.json
+
+# Secrets and development artifacts
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*service-account*.json
+.venv/
+__pycache__/
+*.pyc
+*.log
+clipforge_studios/data/
+clipforge_studios/models/
+clipforge_studios/backend/data/

@@ -779,3 +779,8 @@ async def save_ai_insights(
 
     db.table("history").update(data).eq("id", record_id).execute()
     return {"ok": True, "updated": list(data.keys())}
+
+# Additive opt-in local Studios; disabled unless explicitly configured.
+if os.environ.get("CLIPFORGE_ENABLE_STUDIOS") == "1":
+    from clipforge_studios.install import install as install_studios
+    install_studios(app)
