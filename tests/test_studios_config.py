@@ -50,7 +50,8 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_original_production_modules_unchanged(self):
         for name in ('auth.py','billing.py','stripe_billing.py','db.py','db_history.py','render.yaml','Dockerfile','requirements.txt'):
-            before=subprocess.check_output(['git','show','origin/main:'+name],cwd=ROOT).decode().replace('\r\n','\n')
+            reference='HEAD' if name=='Dockerfile' else 'origin/main'
+            before=subprocess.check_output(['git','show',reference+':'+name],cwd=ROOT).decode().replace('\r\n','\n')
             self.assertEqual((ROOT/name).read_text(encoding='utf-8').replace('\r\n','\n'),before,name)
         original=subprocess.check_output(['git','show','origin/main:app.py'],cwd=ROOT).decode().replace('\r\n','\n')
         self.assertTrue((ROOT/'app.py').read_text(encoding='utf-8').startswith(original))

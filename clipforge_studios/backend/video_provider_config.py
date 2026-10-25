@@ -4,8 +4,11 @@ import json
 import os
 import re
 
-def load(fallback):
-    spec=os.environ.get('CLIPFORGE_VIDEO_PROVIDER_FACTORY','').strip()
+def load(fallback,kind='video'):
+    variable='CLIPFORGE_IMAGE_PROVIDER_FACTORY' if kind=='image' else 'CLIPFORGE_VIDEO_PROVIDER_FACTORY'
+    spec=os.environ.get(variable,'').strip()
+    if not spec and os.environ.get('CLIPFORGE_VIDEO_PROVIDER_API_KEY','').strip():
+        spec='clipforge_studios.backend.kie_provider:build_'+kind+'_provider'
     if not spec:return fallback
     try:
         if not re.fullmatch(r'[a-zA-Z_][\w.]*(?::[a-zA-Z_]\w*)',spec):raise ValueError()
@@ -17,7 +20,7 @@ def load(fallback):
         if not callable(provider.generate) or not callable(provider.status):raise ValueError()
         status=provider.status()
         if not isinstance(status,dict) or not isinstance(status.get('available'),bool):raise ValueError()
-        if status['available']:
+        if status['available'] and kind=='video':
             if not status.get('name') or not status.get('durations') or not status.get('ratios'):raise ValueError()
             if any(type(t)!=int or not 2<=t<=30 for t in status['durations']):raise ValueError()
             if any(r not in ('16:9','9:16','1:1') for r in status['ratios']):raise ValueError()

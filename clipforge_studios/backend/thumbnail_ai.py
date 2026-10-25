@@ -2,10 +2,13 @@
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from pathlib import Path
 from typing import Protocol
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from . import studio, studio_ai, media
 from .server import load
@@ -30,7 +33,10 @@ class UnavailableProvider:
     def status(self):return dict(available=False,name=None,reason='No local image-generation provider is installed. Qwen is text-only. Production image APIs are not connected.')
     def generate(self,concept,references):raise RuntimeError(self.status()['reason'])
 
-provider:ImageProvider=UnavailableProvider()
+from .video_provider_config import load as load_provider
+provider:ImageProvider=load_provider(UnavailableProvider(),kind='image')
+IMAGE_POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='thumbnail-provider')
+IMAGE_LOCK=threading.Lock()
 
 class Request(BaseModel):
     source_id:str=Field(pattern='^[a-f0-9]{32}$')
@@ -96,7 +102,7 @@ def worker(job,source):
             frames.append(dict(time=t,url=f'/thumbnail-ai/jobs/{job["id"]}/reference/{i}'))
         for i,c in enumerate(analysis['concepts']):
             c.update(id=i,approach=['Editorial reveal','Curiosity / question','Character illustration concept'][i],reference=frames[i],image_url=None)
-        job.update(status='completed',stage='Concepts ready; image generation unavailable',analysis=analysis,frames=frames,scene_changes=cuts,
+        job.update(status='completed',stage='Concepts ready',analysis=analysis,frames=frames,scene_changes=cuts,
             engine='local Qwen3-4B + faster-whisper + FFmpeg',visual_analysis='Scene-change detection and timed frames only. No semantic vision model: subjects, people and facial emotions are not identified.',provider=provider.status())
     except Exception as e:job.update(status='failed',stage='Stopped safely',error=str(e))
     finally:(ROOT/(job['id']+'.json')).write_text(json.dumps(job),encoding='utf-8')
@@ -107,6 +113,32 @@ def get_job(job_id):
     path=ROOT/(job_id+'.json')
     if not path.is_file():raise HTTPException(404)
     return json.loads(path.read_text(encoding='utf-8'))
+
+def render_images(job):
+    folder=ROOT/job['id'];outputs=list(job.get('generated',[]))
+    try:
+        job.update(generation_status='running',generation_error=None)
+        for c in job['analysis']['concepts']:
+            if any(o['id']==c['id'] and (folder/f'generated_{c["id"]}.jpg').is_file() for o in outputs):continue
+            try:raw=provider.generate(c,[folder/f'reference_{c["id"]}.jpg'])
+            except Exception:raise ValueError('Image provider request failed. It may still finish remotely; check the provider dashboard before retrying. No automatic paid retry was attempted.') from None
+            if not isinstance(raw,bytes) or len(raw)>20_000_000:raise ValueError('Invalid or oversized provider image')
+            temporary=folder/f'provider_{c["id"]}.input'
+            try:
+                temporary.write_bytes(raw)
+                code,info=media.run(['ffprobe','-v','error','-show_entries','stream=width,height','-of','json',str(temporary)],timeout=20)
+                streams=json.loads(info).get('streams',[]) if not code else []
+                if not streams or not (128<=streams[0].get('width',0)<=4096 and 128<=streams[0].get('height',0)<=4096):raise ValueError('Invalid provider image dimensions')
+                code,_=media.run(['ffmpeg','-v','error','-y','-i',str(temporary),'-frames:v','1',str(folder/f'generated_{c["id"]}.jpg')],timeout=30)
+                if code:raise ValueError('Could not decode provider image')
+            finally:temporary.unlink(missing_ok=True)
+            outputs.append(dict(id=c['id'],url=f'/thumbnail-ai/jobs/{job["id"]}/image/{c["id"]}'))
+            job['generated']=list(outputs)
+        job['generation_status']='completed'
+    except Exception as e:
+        # Only locally authored validation errors may reach clients, never provider bodies.
+        job.update(generation_status='failed',generation_error=str(e) if isinstance(e,ValueError) else 'Image rendering stopped safely')
+    finally:(ROOT/(job['id']+'.json')).write_text(json.dumps(job),encoding='utf-8')
 
 def register(app):
     @app.get('/thumbnail-ai/capabilities')
@@ -138,25 +170,14 @@ def register(app):
         job=get_job(job_id)
         if job['status']!='completed':raise HTTPException(409,'Finish analysis first')
         if not provider.status()['available']:raise HTTPException(503,provider.status()['reason'])
-        folder=ROOT/job_id
-        outputs=[]
-        for c in job['analysis']['concepts']:
-            raw=provider.generate(c,[folder/f'reference_{c["id"]}.jpg'])
-            # Decode and re-encode locally before exposing provider output.
-            if not isinstance(raw,bytes) or len(raw)>20_000_000:raise HTTPException(422,'Invalid or oversized provider image')
-            temporary=folder/f'provider_{c["id"]}.input'
-            try:
-                temporary.write_bytes(raw)
-                code,info=media.run(['ffprobe','-v','error','-show_entries','stream=width,height','-of','json',str(temporary)],timeout=20)
-                streams=json.loads(info).get('streams',[]) if not code else []
-                if not streams or not (128<=streams[0].get('width',0)<=4096 and 128<=streams[0].get('height',0)<=4096):raise HTTPException(422,'Invalid provider image dimensions')
-                code,_=media.run(['ffmpeg','-v','error','-y','-i',str(temporary),'-frames:v','1',str(folder/f'generated_{c["id"]}.jpg')],timeout=30)
-                if code:raise HTTPException(422,'Could not decode provider image')
-            finally:temporary.unlink(missing_ok=True)
-            outputs.append(dict(id=c['id'],url=f'/thumbnail-ai/jobs/{job_id}/image/{c["id"]}'))
-        job['generated']=outputs
-        (ROOT/(job_id+'.json')).write_text(json.dumps(job),encoding='utf-8')
-        return dict(images=outputs,provider=provider.status())
+        with IMAGE_LOCK:
+            if job.get('generation_status')=='completed':return dict(images=job['generated'],provider=provider.status())
+            if job.get('generation_status') not in ('queued','running'):
+                if any(j.get('generation_status') in ('queued','running') for j in JOBS.values()):raise HTTPException(409,'Another thumbnail render is already running')
+                job.update(generation_status='queued',generation_error=None)
+                JOBS[job_id]=job
+                IMAGE_POOL.submit(render_images,job)
+        return JSONResponse(dict(job_id=job_id,generation_status=job['generation_status']),status_code=202)
 
     @app.get('/thumbnail-ai/jobs/{job_id}/image/{index}')
     def image(job_id:str,index:int):
