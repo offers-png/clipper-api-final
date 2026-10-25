@@ -3,7 +3,7 @@ uvicorn[standard]==0.30.6
 pydantic==2.12.4
 openai==2.7.1
 requests==2.32.3
-yt-dlp==2025.1.26
+yt-dlp==2026.10.21
 supabase==2.4.3
 python-multipart==0.0.9
 aiofiles==23.2.1

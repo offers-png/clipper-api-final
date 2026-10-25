@@ -16,6 +16,8 @@ from db_history import insert_transcript
 from supabase import create_client, Client
 from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
+from url_media import download, audio_to_mp3, MediaError
+from clipforge_studios.flags import studios_enabled
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
@@ -141,37 +143,7 @@ def abs_url(request: Request, path: Optional[str]) -> Optional[str]:
     return f"{base}{path}"
 
 def download_to_tmp(url: str) -> str:
-    tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    u = (url or "").lower()
-
-    if any(k in u for k in [
-        "youtube", "youtu.be", "tiktok.com", "instagram.com",
-        "facebook.com", "x.com", "twitter.com", "soundcloud.com", "vimeo.com"
-    ]):
-        # ✅ Use cookies.txt from /data to bypass bot check
-        code, err = run([
-            "yt-dlp",
-            "-f", "mp4",
-            "-o", tmp_path,
-            "--no-playlist",
-            "--force-overwrites",
-            url
-        ], timeout=900)
-    else:
-        # Regular direct download (no cookies used)
-        r = requests.get(url, stream=True, timeout=60)
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code} while fetching URL")
-        with open(tmp_path, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
-                f.write(chunk)
-        code = 0
-        err = ""
-
-    if code != 0 or not os.path.exists(tmp_path):
-        raise RuntimeError(f"yt-dlp failed: {err[:500]}")
-
-    return tmp_path
+    return download(url)
 
 def make_thumbnail(source_path: str, t_start: str, out_path: str):
     # Grab a frame ~0.25s after start to avoid black frames on cuts
@@ -491,6 +463,7 @@ async def transcribe_audio(
     tmp = None
     src = None
     source_name = None
+    mp3_path = None
 
     try:
         # 1) URL transcription
@@ -513,19 +486,8 @@ async def transcribe_audio(
                 status_code=400,
             )
 
-        # Convert to MP3
-        mp3_path = src.rsplit(".", 1)[0] + ".mp3"
-        code, err = run([
-            "ffmpeg", "-y", "-i", src,
-            "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-            mp3_path
-        ], timeout=120)
-
-        if code != 0 or not os.path.exists(mp3_path):
-            return JSONResponse(
-                {"ok": False, "error": friendly_err(err, "Audio conversion")},
-                status_code=500,
-            )
+        # Validate the actual audio stream and use a distinct output path.
+        mp3_path = audio_to_mp3(src)
 
         # Whisper
         with open(mp3_path, "rb") as a:
@@ -560,6 +522,9 @@ async def transcribe_audio(
 
         return JSONResponse({"ok": True, "text": text, "saved_to_db": bool(record_id), "record_id": record_id})
 
+    except MediaError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
+
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": f"Transcription failed: {str(e)}"},
@@ -567,7 +532,7 @@ async def transcribe_audio(
         )
 
     finally:
-        for p in [tmp, src]:
+        for p in [mp3_path, tmp, src]:
             try:
                 if p and os.path.exists(p):
                     os.remove(p)
@@ -781,6 +746,21 @@ async def save_ai_insights(
     return {"ok": True, "updated": list(data.keys())}
 
 # Additive opt-in local Studios; disabled unless explicitly configured.
-if os.environ.get("CLIPFORGE_ENABLE_STUDIOS") == "1":
+if studios_enabled():
     from clipforge_studios.install import install as install_studios
     install_studios(app)
+
+
+@app.get("/api/studios/status")
+def studio_runtime_status():
+    """Public switches and executable availability only; no secrets or paths."""
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        downloader = version("yt-dlp")
+    except PackageNotFoundError:
+        downloader = None
+    return {"enabled": studios_enabled(),
+            "mounted": any(getattr(route, "path", None) == "/studios-api" for route in app.routes),
+            "ffmpeg_available": bool(shutil.which("ffmpeg")),
+            "ffprobe_available": bool(shutil.which("ffprobe")),
+            "downloader_version": downloader}
