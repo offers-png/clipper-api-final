@@ -4,7 +4,7 @@ This branch extends the existing `offers-png/clipper-api-final` backend. Pair it
 
 The original production application, Stripe integration, Supabase authentication/history, OpenAI integration, dependency pins, Dockerfile and Render blueprint are retained. `app.py` adds only an opt-in installer after the existing routes. No original business logic is replaced. The installer is inactive unless `CLIPFORGE_ENABLE_STUDIOS=1`.
 
-The new API is mounted at `/studios-api`. This avoids conflicting with the original clipping, billing and media routes. While this is a development integration its API rejects non-loopback clients. Do not enable it publicly by changing proxy headers or removing that check; production authentication/authorization, billing quotas, storage ownership and resource limits need an explicit deployment review first.
+The new API is mounted at `/studios-api`. This avoids conflicting with the original clipping, billing and media routes. Public-mode Studio routes now verify the existing Supabase session on the server, apply per-user file/job ownership and reuse existing billing gates/usage recording. The credential-free dev entry point remains explicitly loopback-only. Deployment is still opt-in and requires review; see STUDIO_VISIBILITY_FINDINGS.md.
 
 ## Included features
 

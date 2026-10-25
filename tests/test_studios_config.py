@@ -22,7 +22,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_local_install_and_remote_rejection(self):
         host=FastAPI()
-        with patch.dict(os.environ,{'CLIPFORGE_ENABLE_STUDIOS':'1'}):self.assertTrue(install(host))
+        with patch.dict(os.environ,{'CLIPFORGE_ENABLE_STUDIOS':'1'}):self.assertTrue(install(host,local_only=True))
         self.assertEqual(TestClient(host).get('/studios-api/health').status_code,200)
         self.assertEqual(TestClient(host,client=('198.51.100.1',1234)).get('/studios-api/health').status_code,403)
 
