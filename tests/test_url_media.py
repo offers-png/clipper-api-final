@@ -22,6 +22,14 @@ from url_media import MediaError, audio_to_mp3, download, streams
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
+    def guess_type(self, path):
+        return 'text/plain' if path.endswith('wrong-type.mp4') else super().guess_type(path)
+
+    def do_GET(self):
+        if self.path == '/redirect':
+            self.send_response(302); self.send_header('Location','/video.mp4'); self.end_headers(); return
+        super().do_GET()
+
     def log_message(self, *args):
         pass
 
@@ -40,6 +48,7 @@ class MediaTests(unittest.TestCase):
                         '-an', '-c:v', 'copy', str(cls.root/'silent.mp4')], check=True)
         (cls.root/'blocked.html').write_text('<html>Sign in</html>')
         (cls.root/'empty.mp4').touch()
+        shutil.copy(cls.root/'video.mp4', cls.root/'wrong-type.mp4')
         cls.http = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=cls.temp.name))
         cls.thread = threading.Thread(target=cls.http.serve_forever, daemon=True)
         cls.thread.start()
@@ -59,6 +68,16 @@ class MediaTests(unittest.TestCase):
         finally:
             Path(source).unlink(missing_ok=True)
             if output: Path(output).unlink(missing_ok=True)
+
+    def test_real_mp4_with_incorrect_text_content_type(self):
+        source=download(self.base+'wrong-type.mp4')
+        try:self.assertTrue(any(s['codec_type']=='audio' for s in streams(source)))
+        finally:Path(source).unlink()
+
+    def test_http_redirect_to_real_mp4(self):
+        source=download(self.base+'redirect')
+        try:self.assertTrue(any(s['codec_type']=='video' for s in streams(source)))
+        finally:Path(source).unlink()
 
     def test_mp3_input_is_not_overwritten(self):
         source = audio_to_mp3(self.root/'video.mp4')
@@ -121,7 +140,7 @@ class MediaTests(unittest.TestCase):
         database=Mock(return_value=None)
         with tempfile.TemporaryDirectory() as uploads:
             scope=dict(UploadFile=UploadFile, File=File, Form=Form, JSONResponse=JSONResponse,
-                       os=os, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
+                       os=os, asyncio=asyncio, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
                        audio_to_mp3=audio_to_mp3, MediaError=MediaError, client=client,
                        insert_transcript=database, print=Mock())
             exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),scope)

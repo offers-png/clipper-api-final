@@ -15,7 +15,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from billing_identity import billing_actor
+from billing_identity import billing_actor, checkout_reference
 from billing_state import verified_state, VerificationError
 import stripe_billing as billing
 
@@ -214,7 +214,7 @@ class IdentityTests(unittest.TestCase):
     def test_original_billing_routes_ignore_spoofed_email(self):
         source=Path(__file__).resolve().parents[1]/'app.py'
         nodes=ast.parse(source.read_text(encoding='utf-8')).body
-        scope=dict(Request=Request,JSONResponse=JSONResponse,VerificationError=VerificationError,
+        scope=dict(Request=Request,JSONResponse=JSONResponse,VerificationError=VerificationError,checkout_reference=checkout_reference,
             billing_actor=Mock(return_value={'email':'signed-in@example.invalid'}),
             check_clip_access=Mock(return_value={'allowed':True,'plan':'active','payment_verified':True}),
             create_checkout_session=Mock(return_value='https://checkout.example.invalid/fixture'))

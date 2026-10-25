@@ -3,12 +3,14 @@
 Never loads browser cookies or emits downloader diagnostics containing private URLs.
 """
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -19,6 +21,37 @@ PLATFORMS = ('youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com',
 
 class MediaError(RuntimeError):
     pass
+
+
+def platform_url(url):
+    host=(urlparse(url).hostname or '').lower()
+    return any(host == domain or host.endswith('.' + domain) for domain in PLATFORMS)
+
+
+def platform_download(url, root):
+    result = subprocess.run([
+        sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
+        '--no-progress', '--no-simulate', '--socket-timeout', '30',
+        '--retries', '2', '--fragment-retries', '2',
+        '-f', 'bv*+ba/b', '--merge-output-format', 'mp4',
+        '-o', str(root / 'source.%(ext)s'), '--print', 'after_move:filepath',
+        '--', url.strip(),
+    ], capture_output=True, text=True, timeout=900)
+    if result.returncode:
+        # Inspect diagnostic categories without exposing arbitrary stderr or URLs.
+        error=(result.stderr or '').lower()
+        if 'ip address is blocked' in error or 'http error 403' in error:
+            raise MediaError('The video host blocked this server or network (HTTP 403/IP restriction). Upload the video file instead.')
+        if 'login' in error or 'sign in' in error:
+            raise MediaError('This video requires sign-in at its host. Upload a video file you can access.')
+        if 'timed out' in error or 'timeout' in error:
+            raise MediaError('The video host timed out. Retry later or upload the video file.')
+        raise MediaError('Video download failed. The service may block server downloads or require sign-in; upload the video file instead.')
+    lines = result.stdout.strip().splitlines()
+    path = Path(lines[-1]).resolve() if lines else root / 'missing'
+    if path.parent != root.resolve():
+        raise MediaError('Downloader did not return the expected media file.')
+    return path
 
 
 def streams(path):
@@ -37,36 +70,31 @@ def streams(path):
 
 
 def download(url):
+    started=time.monotonic()
     parsed = urlparse(url.strip())
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         raise MediaError('Provide a public HTTP or HTTPS media URL.')
     root = Path(tempfile.mkdtemp(prefix='clipforge-url-'))
     try:
-        host = parsed.hostname.lower()
-        if any(host == domain or host.endswith('.' + domain) for domain in PLATFORMS):
-            result = subprocess.run([
-                sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
-                '--no-progress', '--no-simulate', '-f', 'bv*+ba/b',
-                '--merge-output-format', 'mp4', '-o', str(root / 'source.%(ext)s'),
-                '--print', 'after_move:filepath', '--', url.strip(),
-            ], capture_output=True, text=True, timeout=900)
-            if result.returncode:
-                raise MediaError('Video download failed. The service may block server downloads or require sign-in; upload the video file instead.')
-            lines = result.stdout.strip().splitlines()
-            path = Path(lines[-1]).resolve() if lines else root / 'missing'
-            if path.parent != root.resolve():
-                raise MediaError('Downloader did not return the expected media file.')
+        if platform_url(url):
+            path = platform_download(url, root)
         else:
             path = root / 'source.media'
+            redirected_platform = None
             with requests.get(url.strip(), stream=True, timeout=(15, 60)) as response:
                 if response.status_code != 200:
                     raise MediaError(f'Media download returned HTTP {response.status_code}. Upload the video file instead.')
                 content_type = response.headers.get('Content-Type', '').lower()
-                if any(kind in content_type for kind in ('text/', 'json', 'xml')):
-                    raise MediaError('The URL returned a webpage instead of media. Upload the video file instead.')
-                with path.open('wb') as output:
-                    for chunk in response.iter_content(1024 * 1024):
-                        output.write(chunk)
+                if 'html' in content_type and platform_url(response.url):
+                    redirected_platform = response.url
+                else:
+                    # Some working MP4/CDN links use text/plain or octet-stream.
+                    # Validate actual bytes with FFprobe instead of trusting MIME.
+                    with path.open('wb') as output:
+                        for chunk in response.iter_content(1024 * 1024):
+                            output.write(chunk)
+            if redirected_platform:
+                path = platform_download(redirected_platform, root)
         if not any(s.get('codec_type') in ('audio', 'video') for s in streams(path)):
             raise MediaError('Downloaded file contains no audio or video streams.')
         # Return a standalone file: existing callers own and delete this path.
@@ -78,9 +106,13 @@ def download(url):
             Path(final).unlink(missing_ok=True)
             raise
         return final
-    except MediaError:
+    except MediaError as error:
+        logging.getLogger(__name__).warning('URL download failed kind=%s elapsed=%.2fs reason=%s',
+            'platform' if platform_url(url) else 'direct', time.monotonic()-started, str(error))
         raise
-    except (requests.RequestException, subprocess.SubprocessError, OSError):
+    except (requests.RequestException, subprocess.SubprocessError, OSError) as error:
+        logging.getLogger(__name__).warning('URL download failed kind=%s elapsed=%.2fs exception=%s',
+            'platform' if platform_url(url) else 'direct', time.monotonic()-started, type(error).__name__)
         raise MediaError('Media download failed or timed out. Upload the video file instead.') from None
     finally:
         shutil.rmtree(root)
