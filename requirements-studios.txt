@@ -1,0 +1,5 @@
+# Opt-in local Studio dependencies; production requirements.txt is unchanged.
+-r requirements.txt
+numpy>=2,<3
+faster-whisper>=1.2,<2
+httpx>=0.28,<0.29

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipForge · Local feature tests</title>
+<style>
+[hidden]{display:none!important}
+body{font:16px/1.6 system-ui;background:#f3f5fb;color:#17233b;margin:0}main{max-width:1050px;margin:auto;padding:30px}section,article{background:white;border:1px solid #d5dbea;border-radius:12px;padding:22px;margin:18px 0}h1,h2{line-height:1.2}button,a.button{background:#4338ca;color:white;border:0;border-radius:7px;padding:10px 15px;cursor:pointer;font:inherit;display:inline-block;text-decoration:none}button:disabled{opacity:.45;cursor:default}label{display:inline-block;margin:8px 15px 8px 0}input,select{font:inherit;padding:8px;max-width:100%;box-sizing:border-box}input[type=number]{width:100px}#transcript{max-height:280px;overflow:auto;line-height:2.2;border:1px solid #cbd5e1;padding:15px;border-radius:8px;user-select:text}#transcript span.selected{background:#c7d2fe}#results{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}video{width:100%;background:#101628}#error{color:#b91c1c}.note{background:#e0e7ff;padding:14px;border-radius:8px}.time{color:#667085;font-size:13px;user-select:none}small{display:block}button:focus-visible,a:focus-visible{outline:3px solid #f59e0b;outline-offset:3px}
+</style>
+<main>
+<h1>Transcript Clip Studio</h1>
+<p><a href="/auto" target="_top" class="button">Open Auto Clip Studio</a> — full-video splitting, editing and batch exports.</p>
+<p class="note"><strong>Isolated test interface:</strong> real speech transcription with faster-whisper on your CPU; real local FFmpeg. No authentication, database, billing, or external API calls. Transcript clipping uses actual local speech recognition. Use Auto Clip Studio for real Qwen highlights.</p>
+<section>
+<h2>1. Select a source</h2>
+<label>Video file <input id="file" type="file" accept="video/*"></label>
+<button id="fixture">Load known-dialogue test video</button>
+<button id="load" disabled>Transcribe actual video locally</button>
+<p>Your actual audio is transcribed locally. Model word timestamps are estimates; check the source preview when selecting boundaries. No mock transcript is substituted.</p>
+<video id="source" controls preload="metadata" hidden></video>
+</section>
+<section>
+<h2>2. Transcript highlight clipping</h2>
+<p>Highlight any words or sentences. Partial words snap to full word timestamps. Keyboard selection is supported.</p>
+<div id="transcript" tabindex="0" aria-label="Timestamped transcript">Load a source to see timestamped words.</div>
+<p id="selection" aria-live="polite">No selection</p>
+<label>Padding on each side (seconds) <input id="padding" type="number" min="0" max="1" step="0.05" value="0"></label><small>Default 0. Added padding can include nearby speech.</small><button id="source-selection" disabled>Preview selection in source</button> <button id="create" disabled>Create Clip from Selection</button>
+</section>
+
+<p id="status" role="status"></p><p id="error" role="alert"></p>
+<h2>Generated clips</h2><div id="results"></div>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id);
+let file=null, video=null, selected=null, busy=false, sourceUrl=null;
+const buttons=['fixture','load','create'];
+$('padding').onchange=()=>{if(selected)showRange()};
+function showRange(){const p=Number($('padding').value); if(!Number.isFinite(p)||p<0||p>1){$('error').textContent='Padding must be 0-1 seconds';return}const start=Math.max(0,video.words[selected.first].start-p),end=Math.min(video.duration,video.words[selected.last].end+p);$('selection').textContent=start.toFixed(3)+' - '+end.toFixed(3)+' seconds selected (padding '+p+'s per side)';}
+let selectionEnd=null;
+$('source-selection').onclick=()=>{if(!selected)return;const p=Number($('padding').value);selectionEnd=Math.min(video.duration,video.words[selected.last].end+p);$('source').currentTime=Math.max(0,video.words[selected.first].start-p);$('source').play().catch(e=>{$('error').textContent=e.message})};
+$('source').ontimeupdate=()=>{if(selectionEnd!==null&&$('source').currentTime>=selectionEnd){$('source').pause();selectionEnd=null}};
+function update(){
+  $('fixture').disabled=busy; $('file').disabled=busy;
+  $('load').disabled=busy||!file; $('create').disabled=busy||!selected||!video;
+   $('source-selection').disabled=busy||!video||!selected;
+}
+async function run(label,action){busy=true;update();$('status').textContent=label;$('error').textContent='';try{await action()}catch(e){$('status').textContent='';$('error').textContent=e.message}finally{busy=false;update()}}
+async function request(path,options){const r=await fetch(path,options);let d;try{d=await r.json()}catch{throw Error('Server did not return JSON')}if(!r.ok)throw Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail));return d}
+function choose(next){file=next;video=null;selected=null;selectionEnd=null;$('results').replaceChildren();$('transcript').textContent='Load a source to see timestamped words.';$('selection').textContent='No selection';if(sourceUrl)URL.revokeObjectURL(sourceUrl);sourceUrl=URL.createObjectURL(file);$('source').src=sourceUrl;$('source').hidden=false;update()}
+$('file').onchange=e=>{if(e.target.files[0])choose(e.target.files[0])};
+$('fixture').onclick=()=>run('Loading local fixture…',async()=>{const r=await fetch('/fixture');if(!r.ok)throw Error('Known-dialogue test video has not been generated yet');choose(new File([await r.blob()],'local-fixture.mp4',{type:'video/mp4'}));$('status').textContent='Known-dialogue video loaded. Transcribe its actual audio locally.'});
+async function prepare(){if(video)return video;if(!file)throw Error('Choose a video');const fd=new FormData();fd.append('file',file);video=await request('/api/videos',{method:'POST',body:fd});renderWords();return video}
+function renderWords(){const fragment=document.createDocumentFragment();video.words.forEach((w,i)=>{if(i===0||(video.segments||[]).some(segment=>segment.first===i)){const time=document.createElement('small');time.className='time';time.textContent=w.start.toFixed(3)+' seconds';fragment.append(time)}const span=document.createElement('span');span.dataset.word=i;span.textContent=w.word;span.title=w.start.toFixed(3)+' - '+w.end.toFixed(3)+' seconds; confidence '+(w.probability*100).toFixed(0)+'%';fragment.append(span,document.createTextNode(' '))});$('transcript').replaceChildren(fragment)}
+$('load').onclick=()=>run('Transcribing actual audio locally; first run may take a minute...',async()=>{await prepare();$('status').textContent='Real speech transcript ready: faster-whisper '+video.model+'. Verify boundaries with the source preview.'});
+function readSelection(){const s=getSelection();if(!s.rangeCount||s.isCollapsed)return;const r=s.getRangeAt(0),root=$('transcript');if(!root.contains(r.startContainer)||!root.contains(r.endContainer))return;const nodes=[...root.querySelectorAll('[data-word]')].filter(node=>{const w=document.createRange();w.selectNodeContents(node);return r.compareBoundaryPoints(Range.END_TO_START,w)<0&&r.compareBoundaryPoints(Range.START_TO_END,w)>0});if(!nodes.length)return;selected={first:Number(nodes[0].dataset.word),last:Number(nodes.at(-1).dataset.word)};root.querySelectorAll('[data-word]').forEach(n=>n.classList.toggle('selected',Number(n.dataset.word)>=selected.first&&Number(n.dataset.word)<=selected.last));showRange();update()}
+$('transcript').onmouseup=readSelection;$('transcript').onkeyup=readSelection;
+function appendClip(c){const article=document.createElement('article'),heading=document.createElement('h3'),player=document.createElement('video'),text=document.createElement('p'),link=document.createElement('a');heading.textContent=c.start.toFixed(2)+' – '+c.end.toFixed(2)+' seconds ('+c.duration_seconds.toFixed(2)+'s)';player.controls=true;player.preload='metadata';player.src=c.preview_url;text.textContent=c.text;link.href=c.download_url;link.textContent='Download clip';link.className='button';link.download='clip.mp4';article.append(heading,player,text,link);$('results').append(article)}
+$('create').onclick=()=>run('Clipping selected words with FFmpeg…',async()=>{const c=await request('/api/videos/'+video.video_id+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...selected,padding:Number($('padding').value)})});appendClip(c);$('status').textContent='Selection clip generated locally.'});
+window.localClipTest={getVideo:()=>video,getSelection:()=>selected};
+</script>
+<script type="module" src="/unified-assets/editor-handoff.js"></script></html>
