@@ -196,7 +196,10 @@ def register(app,existing_loader):
     def capabilities():
         try:import cv2;vision=True
         except ImportError:vision=False
-        return dict(ai=studio_ai.status(),face_detection=vision,categories=studio_ai.CATEGORIES,
+        from .transcription import MODEL_PATH
+        import importlib.util
+        speech=(MODEL_PATH/'model.bin').is_file() and importlib.util.find_spec('faster_whisper') is not None
+        return dict(ai=studio_ai.status(),transcription=dict(ready=speech,engine='faster-whisper'),face_detection=vision,categories=studio_ai.CATEGORIES,
             scene_transitions=True,emoji_font=Path('C:/Windows/Fonts/seguiemj.ttf').is_file())
 
     @app.post('/studio/sources')

@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import threading
 import subprocess
-import numpy as np
 import re
 import gc
 from .inference_lock import lock as inference_lock
@@ -68,6 +67,7 @@ def transcribe(audio_path):
     global _model
     if not (MODEL_PATH/'model.bin').is_file():
         raise RuntimeError('Local speech model is not installed. Approve the model download or set CLIPFORGE_LOCAL_MODEL to an existing model directory. No automatic downloads.')
+    import numpy as np
     from faster_whisper import WhisperModel
     with inference_lock, _lock:
         if _model is None:

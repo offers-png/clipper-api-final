@@ -3,14 +3,13 @@ import os
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
-def install(host:FastAPI):
+def install(host:FastAPI,local_only=None,access=None):
     if os.environ.get('CLIPFORGE_ENABLE_STUDIOS')!='1':return False
     from .app import app
-    # This branch is a local development integration, not a new public auth bypass.
-    @app.middleware('http')
-    async def local_only(request,call_next):
-        if request.client is None or request.client.host not in ('127.0.0.1','::1','localhost','testclient'):
-            return JSONResponse({'detail':'Studio API is restricted to local development until production authorization is reviewed.'},status_code=403)
-        return await call_next(request)
-    host.mount('/studios-api',app)
+    from .access import Access,StudioAccess,wrap_pools
+    from .backend.resource_paths import DATA
+    if local_only is None:local_only=os.getenv('CLIPFORGE_STUDIOS_LOCAL_ONLY')=='1'
+    access=access or Access(DATA/'studio-access.sqlite3')
+    wrap_pools()
+    host.mount('/studios-api',StudioAccess(app,access,local_only=local_only))
     return True

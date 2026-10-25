@@ -20,3 +20,6 @@ local_data
 clipforge_studios/data
 clipforge_studios/models
 clipforge_studios/backend/data
+
+# Local auth/billing contract fixtures are never production runtime code.
+tests/
