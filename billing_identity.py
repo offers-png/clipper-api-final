@@ -16,3 +16,25 @@ def billing_actor(request):
         raise
     except Exception:
         raise HTTPException(401, 'Session is invalid or expired') from None
+
+
+async def checkout_reference(request):
+    """Accept legacy empty browser FormData without invoking the old parser bug."""
+    body=await request.body()
+    if len(body)>16384:
+        raise HTTPException(413,'Billing verification request is too large')
+    if not body:
+        return None
+    try:
+        from python_multipart.multipart import parse_options_header
+    except ImportError:  # Existing production dependency: python-multipart 0.0.9.
+        from multipart.multipart import parse_options_header
+    content_type, options=parse_options_header(request.headers.get('content-type',''))
+    boundary=options.get(b'boundary')
+    if content_type==b'multipart/form-data' and boundary and body.strip()==b'--'+boundary+b'--':
+        return None
+    try:
+        form=await request.form()
+    except Exception:
+        raise HTTPException(400,'Invalid billing verification form') from None
+    return form.get('session_id') or None

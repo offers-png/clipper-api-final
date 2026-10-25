@@ -18,7 +18,7 @@ from stripe_billing import check_clip_access, record_clip_used, create_checkout_
 import requests
 from url_media import download, audio_to_mp3, MediaError
 from clipforge_studios.flags import studios_enabled
-from billing_identity import billing_actor
+from billing_identity import billing_actor, checkout_reference
 from billing_state import VerificationError
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
@@ -193,8 +193,7 @@ async def billing_webhook(request: Request):
 @app.post("/billing/check-access")
 async def billing_check_access(request: Request):
     actor = billing_actor(request)
-    form = await request.form()
-    session_id = form.get('session_id') or None
+    session_id = await checkout_reference(request)
     if session_id and (not isinstance(session_id,str) or not session_id.startswith('cs_') or len(session_id)>255):
         return JSONResponse({'ok':False, 'error':'Invalid checkout reference'},400)
     result = check_clip_access(actor['email'], checkout_id=session_id)
@@ -333,7 +332,7 @@ async def clip_multi(
             with open(src, "wb") as f:
                 f.write(await file.read())
         elif url:
-            tmp = download_to_tmp(url)
+            tmp = await asyncio.to_thread(download_to_tmp, url)
             src = os.path.join(UPLOAD_DIR, safe(os.path.basename(url) or f"remote_{nowstamp()}.mp4"))
             shutil.copy(tmp, src)
         else:
@@ -479,7 +478,7 @@ async def transcribe_audio(
     try:
         # 1) URL transcription
         if url:
-            tmp = download_to_tmp(url)
+            tmp = await asyncio.to_thread(download_to_tmp, url)
             src = tmp
             source_name = url.split("/")[-1] if "/" in url else url
 
@@ -498,7 +497,7 @@ async def transcribe_audio(
             )
 
         # Validate the actual audio stream and use a distinct output path.
-        mp3_path = audio_to_mp3(src)
+        mp3_path = await asyncio.to_thread(audio_to_mp3, src)
 
         # Whisper
         with open(mp3_path, "rb") as a:
