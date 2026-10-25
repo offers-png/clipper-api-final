@@ -9,7 +9,11 @@ from .backend.thumbnail_ai import register as thumbnail_ai
 legacy(app);editor(app);image_video(app);thumbnail_ai(app)
 
 @app.get('/health')
-def health():return dict(ok=True,ai=studio_ai.status(),mode='additive-studios',image_generation_connected=False)
+def health():
+    from .backend import image_video as videos,thumbnail_ai as images
+    return dict(ok=True,ai=studio_ai.status(),mode='additive-studios',
+        image_generation_connected=images.provider.status()['available'],
+        video_generation=videos.provider.status(),image_generation=images.provider.status())
 
 from fastapi.staticfiles import StaticFiles
 from .backend import media

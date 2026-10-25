@@ -5,6 +5,7 @@ import json
 import re
 from typing import Literal, Protocol
 import uuid
+import threading
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from . import editor
@@ -34,13 +35,14 @@ from .video_provider_config import load as load_provider
 provider:VideoProvider=load_provider(Unavailable())
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='image-video-provider')
 STATE={}
+STATE_LOCK=threading.Lock()
 
 def worker(job,body):
     folder=editor.JOBS/job['id'];folder.mkdir(exist_ok=True)
     try:
         job.update(status='running',stage='Generating with connected video provider')
         try:raw=provider.generate(Path(editor.asset(body.image_id)['path']),body)
-        except Exception:raise RuntimeError('Video provider request failed; verify the server-side adapter configuration. No generated result was substituted.') from None
+        except Exception:raise RuntimeError('Video provider request failed. It may still finish remotely; check the provider dashboard before retrying. No automatic paid retry or replacement result was attempted.') from None
         if not isinstance(raw,bytes) or len(raw)>512*1024**2:raise ValueError('Provider returned invalid or oversized video')
         p=folder/'provider-video.input';p.write_bytes(raw)
         info=editor.probe(p)
@@ -69,9 +71,10 @@ def register(app):
         caps=provider.status()
         if not caps['available']:raise HTTPException(503,caps['reason'])
         if body.duration not in caps['durations'] or body.ratio not in caps['ratios']:raise HTTPException(422,'Connected provider does not support this duration/aspect ratio')
-        if any(j['status'] in ('queued','running') for j in STATE.values()):raise HTTPException(409,'A video-generation request is already running')
-        job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued')
-        STATE[job['id']]=job;POOL.submit(worker,job,body)
+        with STATE_LOCK:
+            if any(j['status'] in ('queued','running') for j in STATE.values()):raise HTTPException(409,'A video-generation request is already running')
+            job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued')
+            STATE[job['id']]=job;POOL.submit(worker,job,body)
         return job
 
     @app.get('/image-video/jobs/{job_id}')
