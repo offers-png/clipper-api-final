@@ -56,7 +56,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(status['available']);self.assertNotIn('private diagnostic',json.dumps(status))
 
     def test_original_production_modules_unchanged(self):
-        for name in ('auth.py','billing.py','stripe_billing.py','db.py','db_history.py','render.yaml','Dockerfile'):
+        # stripe_billing.py is intentionally repaired by the verified-payment update.
+        for name in ('auth.py','billing.py','db.py','db_history.py','render.yaml','Dockerfile'):
             before=subprocess.check_output(['git','show','origin/main:'+name],cwd=ROOT).decode().replace('\r\n','\n')
             self.assertEqual((ROOT/name).read_text(encoding='utf-8').replace('\r\n','\n'),before,name)
         original=subprocess.check_output(['git','show','origin/main:app.py'],cwd=ROOT).decode().replace('\r\n','\n')
