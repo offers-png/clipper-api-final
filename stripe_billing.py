@@ -125,9 +125,13 @@ def check_clip_access(email: str, checkout_id=None) -> dict:
         remaining = max(0, FREE_CLIPS_PER_DAY - used)
         if used >= FREE_CLIPS_PER_DAY:
             return {"allowed": False, "reason": "daily_limit", "plan": "trial",
-                    "clips_today": used, "clips_remaining": 0}
+                    "clips_today": used, "clips_remaining": 0,
+                    "existing_subscription": bool(user.get('existing_subscription')),
+                    "subscription_status": user.get('subscription_status'), "payment_verified": False}
         return {"allowed": True, "reason": "trial_ok", "plan": "trial",
-                "clips_today": used, "clips_remaining": remaining}
+                "clips_today": used, "clips_remaining": remaining,
+                "existing_subscription": bool(user.get('existing_subscription')),
+                "subscription_status": user.get('subscription_status'), "payment_verified": False}
 
     # ── Expired / Cancelled ───────────────────────────────────────────────────
     return {"allowed": False, "reason": plan, "plan": plan,
