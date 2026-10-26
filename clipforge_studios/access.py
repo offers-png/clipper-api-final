@@ -29,7 +29,8 @@ def auth_client():
 def verified_user(token):
     try:
         user=auth_client().auth.get_user(token).user
-        actor=dict(id=str(uuid.UUID(str(user.id))),email=user.email)
+        actor=dict(id=str(uuid.UUID(str(user.id))),email=user.email,
+                   email_verified=bool(getattr(user,'email_confirmed_at',None)))
         if not actor['email']:raise ValueError()
         return actor
     except HTTPException:raise
@@ -107,6 +108,8 @@ class Access:
         if path=='/api/library/thumbnails':data['items']=[r for r in data.get('items',[]) if self.owns(resource_key(r.get('url','')) or 'missing',user)]
         return data
     def reserve(self,actor):
+        from owner_access import is_owner
+        if is_owner(actor):return dict(manager=self,actor=actor,id=None,submitted=False,owner_development=True)
         with self.lock:
             try:access=self.access(actor['email'])
             except Exception:raise HTTPException(503,'Clip access could not be verified') from None
@@ -126,6 +129,7 @@ class Access:
                 db.execute('INSERT INTO usage VALUES (?,?,?,?,?)',(rid,actor['id'],day,'pending',time.time()))
             return dict(manager=self,actor=actor,id=rid,submitted=False)
     def finish(self,op,success):
+        if op.get('owner_development'):return
         with self.lock:
             with self.db() as db:
                 changed=db.execute("UPDATE usage SET status=? WHERE id=? AND status='pending'",('success' if success else 'failed',op['id'])).rowcount

@@ -154,7 +154,7 @@ def visual_plan(observations):
         finally:studio_ai.shutdown()
 
 def speech_words(source,job):
-    if source.get('words'):return source['words']
+    if source.get('words') and source.get('alignment_version')==3:return source['words']
     audio=Path(media.TMP_DIR)/(job['id']+'-thumbnail.wav')
     output=audio.with_suffix('.json')
     try:

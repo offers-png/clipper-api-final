@@ -115,11 +115,16 @@ def transcribe(audio_path):
         pcm = subprocess.check_output(['ffmpeg','-v','error','-i',str(audio_path),
             '-vn','-af','aresample=async=1:first_pts=0','-ar','16000','-ac','1','-f','f32le','-'])
         audio = np.frombuffer(pcm,dtype='<f4').copy()
-        # Built-in Silero VAD is bundled locally. faster-whisper restores every
-        # word from the speech chunks to the ORIGINAL audio timeline afterward.
+        from faster_whisper.vad import get_speech_timestamps,VadOptions
+        speech_regions=get_speech_timestamps(audio,VadOptions(min_silence_duration_ms=300,speech_pad_ms=0))
+        if not speech_regions:
+            return dict(text='',words=[],segments=[],language='en',engine='faster-whisper',
+                        model=MODEL_PATH.name,alignment_version=3,timestamp_method='No speech detected on original PCM')
+        # Align on the original PCM timeline. Merging VAD speech islands moved
+        # short words across pauses in known-dialogue tests. VAD below only
+        # refines bounded pauses; it never removes/rejoins source audio.
         segments, info = _model.transcribe(audio, word_timestamps=True,
-            beam_size=5, vad_filter=True,
-            vad_parameters={'min_silence_duration_ms':500,'speech_pad_ms':150},
+            beam_size=5, vad_filter=False,
             condition_on_previous_text=False,
             language='en' if MODEL_PATH.name.endswith('.en') else None)
         words, rows = [], []
@@ -128,10 +133,21 @@ def transcribe(audio_path):
             first = len(words)
             for word in segment.words or []:
                 start, end = float(word.start), float(word.end)
+                original_start,original_end=start,end
+                refinement=None
+                # Recognition can collapse a real word at the end of a pause.
+                # Recover only a bounded, previously unassigned speech interval.
+                prior_end=words[-1]['end'] if words else 0.0
+                if math.isfinite(start) and end==start:
+                    candidates=[r['start']/16000 for r in speech_regions
+                        if prior_end<=r['start']/16000 and .02<=start-r['start']/16000<=.5]
+                    if candidates:
+                        start=max(candidates);refinement='pause-bounded collapsed-word recovery'
                 if not all(math.isfinite(t) for t in (start,end)) or start < previous-.02 or end <= start:
                     continue
                 words.append(dict(word=word.word.strip(), start=start, end=end,
                                   probability=float(word.probability)))
+                if refinement:words[-1].update(raw_start=original_start,raw_end=original_end,alignment_refinement=refinement)
                 previous = start
             if len(words) > first:
                 rows.append(dict(first=first,last=len(words)-1,text=segment.text.strip(),
@@ -141,5 +157,5 @@ def transcribe(audio_path):
             row['start']=words[row['first']]['start']
             row['end']=words[row['last']]['end']
         return dict(text=' '.join(w['word'] for w in words), words=words, segments=rows,
-            language=info.language, engine='faster-whisper', model=MODEL_PATH.name,
-            timestamp_method='model word alignment with original-timeline restoration and pause-bounded sentence-tail refinement; raw adjusted values retained')
+            language=info.language, engine='faster-whisper', model=MODEL_PATH.name,alignment_version=3,
+            timestamp_method='model word alignment on uncut original PCM with pause-bounded collapsed-word and sentence-tail refinement; raw adjusted values retained')

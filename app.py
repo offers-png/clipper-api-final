@@ -169,6 +169,8 @@ def health_get():
 @app.post("/billing/checkout")
 async def billing_checkout(request: Request):
     actor = billing_actor(request)
+    from owner_access import is_owner
+    if is_owner(actor):return {'ok':True,'already_subscribed':True,'owner_development':True}
     try:
         url = create_checkout_session(actor['email'])
         return {'ok':True, 'url':url}
@@ -192,11 +194,13 @@ async def billing_webhook(request: Request):
 
 @app.post("/billing/check-access")
 async def billing_check_access(request: Request):
+    from owner_access import development_access
     actor = billing_actor(request)
     session_id = await checkout_reference(request)
     if session_id and (not isinstance(session_id,str) or not session_id.startswith('cs_') or len(session_id)>255):
         return JSONResponse({'ok':False, 'error':'Invalid checkout reference'},400)
-    result = await asyncio.to_thread(check_clip_access, actor['email'], checkout_id=session_id)
+    result = development_access(actor)
+    if result is None:result = await asyncio.to_thread(check_clip_access, actor['email'], checkout_id=session_id)
     if result.get('plan')=='unknown':
         return JSONResponse({'ok':False, **result, 'error':'We could not verify your subscription. Retry verification; do not pay again.'},503)
     return {'ok':True, **result}
@@ -306,13 +310,14 @@ async def clip_multi(
     final_1080: str  = Form("0"),
     user_id: str = Form(default="anonymous"),
 ):
+    from owner_access import development_access,is_owner
     actor = billing_actor(request)
     user_id = actor['email']
     tmp = None
     try:
         # ── Access gate ──────────────────────────────────────────────────────
         if user_id and user_id != "anonymous":
-            access = check_clip_access(user_id)
+            access = development_access(actor) or check_clip_access(user_id)
             if not access.get("allowed"):
                 if access.get('existing_subscription') and access.get('subscription_status')=='trialing':
                     return JSONResponse({'ok':False,'upgrade':False,
@@ -397,7 +402,7 @@ async def clip_multi(
             print(f"⚠️ History save failed (clip_multi): {db_err}")
 
         # Record usage for billing
-        if user_id and user_id != "anonymous":
+        if user_id and user_id != "anonymous" and not is_owner(actor):
             try:
                 record_clip_used(user_id)
             except Exception as e:

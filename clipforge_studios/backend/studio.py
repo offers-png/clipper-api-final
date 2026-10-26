@@ -102,7 +102,7 @@ def _load_source(source_id,existing_loader):
 
 
 def _words(data,job):
-    if data.get('words'):return data['words']
+    if data.get('words') and data.get('alignment_version')==3:return data['words']
     update(job,stage='Transcribing actual audio locally',progress=.05)
     audio=Path(media.TMP_DIR)/(job['id']+'.wav')
     try:
