@@ -6,6 +6,10 @@ import threading
 import subprocess
 import re
 import gc
+import sys
+import json
+import tempfile
+from functools import lru_cache
 from .inference_lock import lock as inference_lock
 from . import studio_memory
 
@@ -13,11 +17,20 @@ from .resource_paths import MODELS
 MODEL_PATH = Path(os.getenv('CLIPFORGE_LOCAL_MODEL') or MODELS/'base.en').resolve()
 _model = None
 _lock = threading.Lock()
+SPEECH_PYTHON = Path(os.getenv('CLIPFORGE_THUMBNAIL_SPEECH_PYTHON') or sys.executable).resolve()
+
+@lru_cache(maxsize=2)
+def external_library(python):
+    try:
+        result=subprocess.run([python,'-c','import importlib.util; print(int(importlib.util.find_spec("faster_whisper") is not None))'],capture_output=True,text=True,timeout=10)
+        return result.returncode==0 and result.stdout.strip()=='1'
+    except (OSError,subprocess.TimeoutExpired):return False
 
 
 def status():
     import importlib.util
-    installed=importlib.util.find_spec('faster_whisper') is not None
+    installed=(external_library(str(SPEECH_PYTHON)) if SPEECH_PYTHON!=Path(sys.executable).resolve()
+               else importlib.util.find_spec('faster_whisper') is not None)
     present=(MODEL_PATH/'model.bin').is_file()
     return dict(ready=installed and present,engine='faster-whisper',model=MODEL_PATH.name,
                 library_installed=installed,model_installed=present,download_automatic=False)
@@ -75,6 +88,22 @@ def transcribe(audio_path):
     global _model
     if not (MODEL_PATH/'model.bin').is_file():
         raise RuntimeError('Local speech model is not installed. Approve the model download or set CLIPFORGE_LOCAL_MODEL to an existing model directory. No automatic downloads.')
+    if SPEECH_PYTHON!=Path(sys.executable).resolve():
+        # The child deliberately does not inherit the interpreter override or
+        # production credentials. Its exit releases all native speech memory.
+        environment={k:v for k,v in os.environ.items() if k.upper() in
+            ('PATH','SYSTEMROOT','WINDIR','TEMP','TMP','PYTHONPATH','LD_LIBRARY_PATH','CLIPFORGE_MODELS_DIR','CLIPFORGE_LOCAL_MODEL','CLIPFORGE_STUDIO_DATA_DIR')}
+        environment.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',OMP_NUM_THREADS='2')
+        with inference_lock, _lock:
+            with tempfile.TemporaryDirectory(prefix='clipforge-speech-') as folder:
+                output=Path(folder)/'transcript.json'
+                try:
+                    result=subprocess.run([str(SPEECH_PYTHON),'-m','clipforge_studios.backend.thumbnail_speech',str(audio_path),str(output)],
+                        env=environment,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=600,
+                        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                    if result.returncode or not output.is_file():raise RuntimeError('Offline transcription worker failed or lacked memory. No cloud fallback was used.')
+                    return json.loads(output.read_text(encoding='utf-8'))
+                finally:studio_memory.release_model_cache(MODEL_PATH/'model.bin')
     import numpy as np
     from faster_whisper import WhisperModel
     with inference_lock, _lock:

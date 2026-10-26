@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 import uuid
 import requests
 from . import kie_budget
+from . import kie_account
+from decimal import Decimal,InvalidOperation
 
 API='https://api.kie.ai/api/v1/jobs'
 UPLOAD='https://kieai.redpandaai.co/api/file-stream-upload'
@@ -52,11 +54,15 @@ class KieClient:
         self.clock=clock or time.monotonic;self.sleep=sleep or time.sleep
 
     def available(self):
+        if kie_account.active():return kie_account.status(bool(self._key))['available']
         if kie_budget.scoped():return bool(self._key) and kie_budget.available()
         return bool(self._key) and os.getenv('CLIPFORGE_KIE_ALLOW_PAID_REQUESTS')=='1'
 
     def require_approval(self):
         if not self._key:raise KieError('KIE API key is not configured on the server')
+        if kie_account.active():
+            kie_account.require_execution()
+            return
         if kie_budget.scoped():
             kie_budget.require_ticket()
             return
@@ -72,18 +78,37 @@ class KieClient:
 
     def _json(self,method,url,**kwargs):
         self.require_approval()
+        creating=method=='POST' and url==API+'/createTask'
+        if creating and kie_account.active():
+            payload=kwargs.get('json',{})
+            kie_account.claim_submission(payload.get('model'),payload.get('input',{}),self.credit_balance())
         try:
             with self.session.request(method,url,headers={'Authorization':'Bearer '+self._key},
                     timeout=(10,60),allow_redirects=False,stream=True,**kwargs) as response:
                 if response.status_code!=200:raise KieError('KIE HTTP request failed; no automatic resubmission was attempted')
                 body=json.loads(self._read(response,1024*1024))
             if not isinstance(body,dict) or body.get('code')!=200:
+                if creating and kie_account.active() and isinstance(body,dict) and body.get('code') in (400,401,402,403,422):kie_account.terminal('rejected')
                 # Never expose msg/failMsg/request headers: providers may echo inputs.
                 raise KieError('KIE rejected the request; check account credits and server configuration')
             if not isinstance(body.get('data'),dict):raise KieError('KIE response is missing task data')
             return body['data']
         except KieError:raise
         except Exception:raise KieError('KIE connection or response failed; no automatic resubmission was attempted') from None
+
+    def credit_balance(self):
+        """Read-only official balance request; never creates a generation task."""
+        if not self._key:raise KieError('KIE is not configured on the server')
+        try:
+            with self.session.request('GET','https://api.kie.ai/api/v1/chat/credit',
+                    headers={'Authorization':'Bearer '+self._key},timeout=(10,30),allow_redirects=False,stream=True) as response:
+                if response.status_code!=200:raise ValueError()
+                body=json.loads(self._read(response,16384))
+            if body.get('code')!=200 or isinstance(body.get('data'),bool):raise ValueError()
+            value=Decimal(str(body['data']))
+            if not value.is_finite() or value<0:raise ValueError()
+            return value
+        except Exception:raise KieError('KIE credit balance could not be verified; no paid request was submitted') from None
 
     def upload(self,path):
         self.require_approval()
@@ -97,21 +122,25 @@ class KieClient:
         return safe_url(result.get('downloadUrl'))
 
     def task(self,model,inputs):
-        if kie_budget.scoped():kie_budget.claim_submission(model,inputs)
+        if kie_budget.scoped() and not kie_account.active():kie_budget.claim_submission(model,inputs)
         created=self._json('POST',API+'/createTask',json={'model':model,'input':inputs})
         task_id=created.get('taskId','')
         if not isinstance(task_id,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,160}',task_id):raise KieError('KIE returned an invalid task ID')
-        if kie_budget.scoped():kie_budget.record_task(task_id)
+        if kie_account.active():kie_account.record_task(task_id)
+        elif kie_budget.scoped():kie_budget.record_task(task_id)
         deadline=self.clock()+self.timeout;interval=2
         while self.clock()<deadline:
             data=self._json('GET',API+'/recordInfo',params={'taskId':task_id})
             state=data.get('state')
             if state=='success':
+                if kie_account.active():kie_account.terminal('success')
                 try:urls=json.loads(data['resultJson'])['resultUrls']
                 except Exception:raise KieError('KIE completed without valid media results') from None
                 if not isinstance(urls,list) or not urls:raise KieError('KIE completed without media results')
                 return safe_url(urls[0])
-            if state=='fail':raise KieError('KIE generation failed; no result or replacement task was created')
+            if state=='fail':
+                if kie_account.active():kie_account.terminal('failed')
+                raise KieError('KIE generation failed; no result or replacement task was created')
             if state not in ('waiting','queuing','generating'):raise KieError('KIE returned an unknown task state')
             self.sleep(min(interval,max(0,deadline-self.clock())));interval=min(20,interval*1.5)
         raise KieError('KIE task timed out; it may still finish remotely. No replacement task was created; check the KIE dashboard before retrying')
@@ -146,15 +175,19 @@ class KieClient:
         return self.download(self.task(model,inputs),'image')
 
 def reason(client):
+    if kie_account.active():return kie_account.status(bool(client._key))['reason']
     if kie_budget.scoped():
         return 'Account-only KIE test: one 5-second 720p video, 80 credits (approximately $0.40), maximum approved budget $1. No automatic retries.' if client.available() else 'KIE is restricted to one approved account and one video test. This account is not enabled or the test attempt has already been used.'
     return 'KIE AI is configured for generation. Each generation sends reference media to KIE and uses paid credits; remote authentication is verified when a request runs.' if client.available() else 'KIE API key is not configured on the server' if not client._key else 'KIE AI is configured using the existing server key. Paid generation is disabled pending approval; no additional API key is needed.'
 
 class KieVideoProvider:
     def __init__(self,client):self.client=client
-    def status(self):return dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
+    def status(self):
+        status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
+        if kie_account.active():status.update(kie_account.status(bool(self.client._key)))
+        return status
     def generate(self,image_path,request):
-        if kie_budget.scoped():
+        if kie_budget.scoped() and not kie_account.active():
             with kie_budget.attempt(request):return self._generate(image_path,request)
         return self._generate(image_path,request)
     def _generate(self,image_path,request):
@@ -175,9 +208,12 @@ class KieVideoProvider:
 
 class KieImageProvider:
     def __init__(self,client):self.client=client
-    def status(self):return dict(available=False if kie_budget.scoped() else self.client.available(),configured=bool(self.client._key),name='KIE AI · Nano Banana Edit',model=IMAGE_MODEL,reason='Image generation is excluded from the approved video-only test.' if kie_budget.scoped() else reason(self.client),paid=True)
+    def status(self):
+        status=dict(available=False if kie_budget.scoped() and not kie_account.active() else self.client.available(),configured=bool(self.client._key),name='KIE AI · Nano Banana Edit',model=IMAGE_MODEL,reason='Image generation is excluded from the approved video-only test.' if kie_budget.scoped() and not kie_account.active() else reason(self.client),paid=True)
+        if kie_account.active():status.update(kie_account.status(bool(self.client._key)))
+        return status
     def generate(self,concept,references):
-        if kie_budget.scoped():raise KieError('Image generation is excluded from the approved video-only test')
+        if kie_budget.scoped() and not kie_account.active():raise KieError('Image generation is excluded from the approved video-only test')
         prompt=('Create a professional thumbnail artwork based on the actual reference image and this proposed creative brief. '
             'Keep the reference subject consistent. Do not invent factual events. Leave space for editable headline text; do not bake a title into the image. '+str(concept.get('image_prompt','')))
         return self.client.generate_image(prompt,references=references)

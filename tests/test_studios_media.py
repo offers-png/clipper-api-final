@@ -63,8 +63,10 @@ def studio_job(body):
         if item.get('thumbnail_url'):assert requests.get(BASE+item['thumbnail_url'],timeout=30).status_code==200
     from zipfile import ZipFile
     from io import BytesIO
-    z=requests.get(BASE+job['zip_url'],timeout=60)
-    assert z.status_code==200 and len(ZipFile(BytesIO(z.content)).namelist())>=len(job['items'])
+    if job['items']:
+        z=requests.get(BASE+job['zip_url'],timeout=60)
+        assert z.status_code==200 and len(ZipFile(BytesIO(z.content)).namelist())>=len(job['items'])
+    else:assert job['stage']=='No suitable moments' and job['message']
     return job
 
 @unittest.skipUnless(SOURCE.is_file(),"Set CLIPFORGE_TEST_VIDEO to an actual local spoken video; no mock transcript is used")
@@ -140,7 +142,7 @@ class EditorTests(unittest.TestCase):
         for url in urls:
             r=requests.post(BASE+'/editor/import',json={'url':url});self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['kind'],'video')
         self.assertTrue(full['coverage']['complete']);self.assertEqual(len(full['items']),3)
-        ai=studio_job(dict(source_id=source['id'],mode='highlights',duration=10,count=2,category='best',enhancements=dict(subtitles=True,animated=True,hooks=True,context=True,vertical=True,thumbnail=True)))
+        ai=studio_job(dict(source_id=source['id'],mode='highlights',duration=10,count=2,category='speech',enhancements=dict(subtitles=True,animated=True,hooks=True,context=True,vertical=True,thumbnail=True)))
         self.assertGreaterEqual(len(ai['items']),1)
         for count in range(1,6):
             r=requests.post(BASE+'/local-original/manual',json=dict(source_id=source['id'],sections=[dict(start=i*2/count,end=(i+1)*2/count) for i in range(count)]),timeout=240)

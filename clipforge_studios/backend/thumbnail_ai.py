@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_memory
+from . import kie_account
+from contextlib import nullcontext
 from .server import load
 from .inference_lock import lock
 
@@ -61,6 +63,12 @@ def speech_status():
 
 class Request(BaseModel):
     source_id:str=Field(pattern='^[a-f0-9]{32}$')
+
+class Spending(BaseModel):
+    quote_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
+    confirm_spend:bool=False
+
+def image_binding(job):return dict(job_id=job['id'],concepts=[dict(id=c['id'],image_prompt=c['image_prompt']) for c in job['analysis']['concepts']])
 
 def phrases(words):
     rows=[];first=0
@@ -228,7 +236,9 @@ def render_images(job):
         job.update(generation_status='running',generation_error=None)
         for c in job['analysis']['concepts']:
             if any(o['id']==c['id'] and (folder/f'generated_{c["id"]}.jpg').is_file() for o in outputs):continue
-            try:raw=provider.generate(c,[folder/f'reference_{c["id"]}.jpg'])
+            try:
+                with kie_account.execution(job['paid_quote_id']) if kie_account.active() else nullcontext():
+                    raw=provider.generate(c,[folder/f'reference_{c["id"]}.jpg'])
             except Exception:raise ValueError('Image provider request failed. It may still finish remotely; check the provider dashboard before retrying. No automatic paid retry was attempted.') from None
             if not isinstance(raw,bytes) or len(raw)>20_000_000:raise ValueError('Invalid or oversized provider image')
             temporary=folder/f'provider_{c["id"]}.input'
@@ -246,7 +256,9 @@ def render_images(job):
     except Exception as e:
         # Only locally authored validation errors may reach clients, never provider bodies.
         job.update(generation_status='failed',generation_error=str(e) if isinstance(e,ValueError) else 'Image rendering stopped safely')
-    finally:(ROOT/(job['id']+'.json')).write_text(json.dumps(job),encoding='utf-8')
+    finally:
+        if job.get('paid_quote_id'):kie_account.finish(job['paid_quote_id'],job.get('generation_status')=='completed')
+        (ROOT/(job['id']+'.json')).write_text(json.dumps(job),encoding='utf-8')
 
 def register(app):
     @app.get('/thumbnail-ai/capabilities')
@@ -277,7 +289,7 @@ def register(app):
         return FileResponse(path,media_type='image/jpeg')
 
     @app.post('/thumbnail-ai/jobs/{job_id}/generate')
-    def generate(job_id:str):
+    def generate(job_id:str,body:Spending=Spending()):
         job=get_job(job_id)
         if job['status']!='completed':raise HTTPException(409,'Finish analysis first')
         if job.get('generation_status')=='completed':return dict(images=job['generated'],provider=provider.status())
@@ -287,10 +299,25 @@ def register(app):
             if job.get('generation_status') not in ('queued','running'):
                 if job.get('generation_status')=='failed':raise HTTPException(409,'A previous generation failed or has uncertain provider cost. Paid retries require a new explicit approval; this job will not resubmit.')
                 if any(j.get('generation_status') in ('queued','running') for j in JOBS.values()):raise HTTPException(409,'Another thumbnail render is already running')
+                if kie_account.active():
+                    try:job['paid_quote_id']=kie_account.reserve(body.quote_id,'images',image_binding(job),provider.client.credit_balance(),body.confirm_spend)
+                    except HTTPException:raise
+                    except Exception:raise HTTPException(503,'KIE balance could not be verified; no paid job was submitted') from None
                 job.update(generation_status='queued',generation_error=None)
                 JOBS[job_id]=job
                 IMAGE_POOL.submit(render_images,job)
         return JSONResponse(dict(job_id=job_id,generation_status=job['generation_status']),status_code=202)
+
+    @app.post('/thumbnail-ai/jobs/{job_id}/quote')
+    def image_quote(job_id:str):
+        if not kie_account.active():raise HTTPException(503,'Account generation is not configured')
+        kie_account.user();job=get_job(job_id)
+        if job['status']!='completed':raise HTTPException(409,'Finish video analysis first')
+        if job.get('generation_status') in ('failed','queued','running','completed'):raise HTTPException(409,'This render already started or finished; inspect its existing results')
+        if len(job['analysis']['concepts'])!=3:raise HTTPException(422,'Three analyzed concepts are required')
+        try:return kie_account.quote('images',image_binding(job),provider.client.credit_balance())
+        except HTTPException:raise
+        except Exception:raise HTTPException(503,'KIE credit balance could not be verified; no paid job was submitted') from None
 
     @app.get('/thumbnail-ai/jobs/{job_id}/image/{index}')
     def image(job_id:str,index:int):
