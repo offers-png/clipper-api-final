@@ -17,6 +17,7 @@ import uuid
 from fastapi import HTTPException
 from . import kie_budget as legacy
 from .resource_paths import DATA
+from . import video_models
 
 LEDGER=DATA/'kie-account-spending.sqlite3'
 permit=ContextVar('kie_account_permit',default=None)
@@ -48,6 +49,12 @@ def database():
     try:
         db.execute('CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY,user TEXT NOT NULL,kind TEXT NOT NULL,fingerprint TEXT NOT NULL,credits INTEGER NOT NULL,held INTEGER NOT NULL,tasks INTEGER NOT NULL,duration INTEGER NOT NULL,state TEXT NOT NULL,expires REAL NOT NULL,created REAL NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS submissions (quote TEXT NOT NULL,ordinal INTEGER NOT NULL,task TEXT,state TEXT NOT NULL,PRIMARY KEY(quote,ordinal))')
+        columns={r[1] for r in db.execute('PRAGMA table_info(quotes)')}
+        for name in ('model','ratio'):
+            if name not in columns:
+                try:db.execute(f'ALTER TABLE quotes ADD COLUMN {name} TEXT')
+                except sqlite3.OperationalError:
+                    if name not in {r[1] for r in db.execute('PRAGMA table_info(quotes)')}:raise
         db.commit()
         with db:yield db
     finally:db.close()
@@ -74,22 +81,22 @@ def status(configured):
 
 def quote(kind,binding,balance):
     uid=user();cap=limit()
-    if kind=='images':credits,tasks,duration=12,3,0
+    if kind=='images':credits,tasks,duration,model=12,3,0,IMAGE_MODEL
     elif kind=='video':
+        selected=video_models.resolve(binding)
         duration=binding.get('duration')
-        if type(duration)!=int or not 2<=duration<=15:raise HTTPException(422,'Choose a video duration from 2 to 15 seconds')
-        credits,tasks=16*duration,1
+        credits,tasks,model=selected['credits_per_second']*duration,1,selected['id']
     else:raise HTTPException(422,'Unsupported generation type')
     with database() as db:
         used=held(db,uid)
         pending=db.execute("SELECT 1 FROM quotes WHERE user=? AND state IN ('reserved','uncertain')",(uid,)).fetchone()
         reason='An earlier paid request is still pending or uncertain. Check it before starting another.' if pending else 'The account spending limit would be exceeded.' if used+credits>cap else 'KIE has insufficient credits. Add credits in your KIE account before generating.' if balance<credits else None
         qid=uuid.uuid4().hex
-        db.execute('INSERT INTO quotes VALUES (?,?,?,?,?,?,?,?,?,?,?)',(qid,uid,kind,fingerprint(binding),credits,0,tasks,duration,'quoted',time.time()+600,time.time()))
-    return dict(quote_id=qid,kind=kind,count=tasks,model=IMAGE_MODEL if kind=='images' else VIDEO_MODEL,
+        db.execute('INSERT INTO quotes (id,user,kind,fingerprint,credits,held,tasks,duration,state,expires,created,model,ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',(qid,uid,kind,fingerprint(binding),credits,0,tasks,duration,'quoted',time.time()+600,time.time(),model,binding.get('ratio','16:9')))
+    return dict(quote_id=qid,kind=kind,count=tasks,model=model,
         cost_credits=credits,cost_usd=usd(credits),balance_credits=str(balance),spending_limit_usd=usd(cap),
         committed_usd=usd(used),remaining_usd=usd(max(0,cap-used)),can_submit=reason is None,
-        reason=reason or 'Confirm to upload reference media to KIE and spend these credits.',expires_in_seconds=600)
+        reason=reason or ('Confirm to send this text prompt to KIE and spend these credits.' if kind=='video' and binding.get('mode')=='text' else 'Confirm to upload reference media to KIE and spend these credits.'),expires_in_seconds=600)
 
 def reserve(qid,kind,binding,balance,confirmed):
     uid=user();cap=limit()
@@ -126,8 +133,15 @@ def claim_submission(model,inputs,balance):
         valid=model==IMAGE_MODEL and set(inputs)=={'prompt','image_urls','aspect_ratio','output_format'} and inputs.get('output_format')=='png' and inputs.get('aspect_ratio') in ('16:9','9:16','1:1') and len(inputs.get('image_urls',[]))==1
         unit=4
     else:
-        valid=model==VIDEO_MODEL and set(inputs)=={'prompt','first_frame_url','duration','resolution','prompt_extend'} and inputs.get('duration')==q['duration'] and inputs.get('resolution')=='720p' and inputs.get('prompt_extend') is False
-        unit=16*q['duration']
+        expected=q.get('model') or VIDEO_MODEL
+        newer=expected.startswith('wan/2-7-');text='text-to-video' in expected
+        extra=('ratio' if newer else 'aspect_ratio') if text else ('first_frame_url' if newer else 'image_url')
+        expansion='prompt_extend' if newer else 'enable_prompt_expansion'
+        valid=(model==expected and set(inputs)=={'prompt',extra,'duration','resolution',expansion}
+            and inputs.get('duration')==(q['duration'] if newer else str(q['duration']))
+            and inputs.get('resolution')=='720p' and inputs.get(expansion) is False
+            and (not text or inputs.get(extra)==q.get('ratio')))
+        unit=q['credits']
     if not valid:raise RuntimeError('KIE request differs from its server-priced quote')
     if balance<unit:raise RuntimeError('KIE balance is insufficient; this paid task was not submitted')
     with database() as db:

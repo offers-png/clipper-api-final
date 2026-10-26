@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import uuid
 import requests
 from . import kie_budget
-from . import kie_account
+from . import kie_account,video_models
 from decimal import Decimal,InvalidOperation
 
 API='https://api.kie.ai/api/v1/jobs'
@@ -121,7 +121,7 @@ class KieClient:
             result=self._json('POST',UPLOAD,files={'file':('reference.'+ext,stream,mime)},data={'uploadPath':'clipforge/references','fileName':uuid.uuid4().hex+'.'+ext})
         return safe_url(result.get('downloadUrl'))
 
-    def task(self,model,inputs):
+    def task(self,model,inputs,on_progress=None):
         if kie_budget.scoped() and not kie_account.active():kie_budget.claim_submission(model,inputs)
         created=self._json('POST',API+'/createTask',json={'model':model,'input':inputs})
         task_id=created.get('taskId','')
@@ -132,6 +132,7 @@ class KieClient:
         while self.clock()<deadline:
             data=self._json('GET',API+'/recordInfo',params={'taskId':task_id})
             state=data.get('state')
+            if on_progress and state in ('waiting','queuing','generating','success','fail'):on_progress(state)
             if state=='success':
                 if kie_account.active():kie_account.terminal('success')
                 try:urls=json.loads(data['resultJson'])['resultUrls']
@@ -185,6 +186,7 @@ class KieVideoProvider:
     def status(self):
         status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
         if kie_account.active():status.update(kie_account.status(bool(self.client._key)))
+        status['models']=video_models.catalog()
         return status
     def generate(self,image_path,request):
         if kie_budget.scoped() and not kie_account.active():
@@ -192,19 +194,23 @@ class KieVideoProvider:
         return self._generate(image_path,request)
     def _generate(self,image_path,request):
         self.client.require_approval()
-        if request.duration not in range(2,16) or request.ratio not in ('16:9','9:16','1:1'):raise KieError('Wan 2.7 supports 2–15 seconds and the prepared reference aspect ratios')
-        styles={'Cinematic':'Cinematic camera movement.','Natural movement':'Subtle natural movement.','Camera zoom':'Slow camera zoom.','Camera pan':'Slow camera pan.','Animated character':'Animate the reference character consistently.','Custom prompt':''}
-        prompt=((request.prompt or 'Bring the actual reference image to life with subtle movement.')+' '+styles[request.motion]).strip()
-        # Wan uses first_frame_url, not an undocumented aspect_ratio parameter.
-        # Fit/pad the reference first; final output ratio is checked by image_video.
-        from . import editor
-        w,h=editor.SIZES[request.ratio]
-        with tempfile.TemporaryDirectory(prefix='kie-reference-') as temp:
-            image=Path(temp)/'reference.png'
-            editor.run(['-i',str(Path(image_path).resolve()),'-frames:v','1','-vf',f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2',str(image)],temp)
-            url=self.client.upload(image)
-        inputs={'prompt':prompt,'first_frame_url':url,'duration':request.duration,'resolution':'720p','prompt_extend':False}
-        return self.client.download(self.client.task(VIDEO_MODEL,inputs),'video')
+        selected=video_models.resolve(request.model_dump())
+        model=selected['id'];newer=model.startswith('wan/2-7-')
+        prompt=video_models.effective_prompt(request.model_dump())
+        inputs=dict(prompt=prompt,duration=request.duration if newer else str(request.duration),resolution='720p')
+        inputs['prompt_extend' if newer else 'enable_prompt_expansion']=False
+        if request.mode=='text':
+            if not request.prompt.strip():raise KieError('Enter a text prompt')
+            inputs['ratio' if newer else 'aspect_ratio']=request.ratio
+        else:
+            from . import editor
+            w,h=editor.SIZES[request.ratio]
+            with tempfile.TemporaryDirectory(prefix='kie-reference-') as temp:
+                image=Path(temp)/'reference.png'
+                editor.run(['-i',str(Path(image_path).resolve()),'-frames:v','1','-vf',f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2',str(image)],temp)
+                url=self.client.upload(image)
+            inputs['first_frame_url' if newer else 'image_url']=url
+        return self.client.download(self.client.task(model,inputs,on_progress=request._progress),'video')
 
 class KieImageProvider:
     def __init__(self,client):self.client=client

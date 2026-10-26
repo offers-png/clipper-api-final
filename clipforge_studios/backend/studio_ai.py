@@ -146,6 +146,25 @@ def source_quotes(text):
             if grounded(quote,text) and quote not in result:result.append(quote)
     return result
 
+def context_sections(text,max_tokens=220):
+    """Lossless ordered source sections; use the installed model's tokenizer."""
+    result=[];offset=0
+    while offset<len(text):
+        lo,hi=1,min(len(text)-offset,1600)
+        while lo<hi:
+            mid=(lo+hi+1)//2
+            tokens=_request('/tokenize',dict(content=json.dumps(text[offset:offset+mid],ensure_ascii=False),add_special=False),timeout=15)['tokens']
+            if len(tokens)<=max_tokens:lo=mid
+            else:hi=mid-1
+        end=offset+lo
+        if end<len(text):
+            # Prefer a sentence/word boundary while retaining every character.
+            boundaries=[m.end() for m in re.finditer(r'[.!?]\s+|\s+',text[offset:end])]
+            if boundaries and boundaries[-1]>=lo//2:end=offset+boundaries[-1]
+        result.append(text[offset:end]);offset=end
+    return result
+
+
 def _analyse(options,category,on_progress=None):
     """Rank timestamp-backed candidates; reject ungrounded hooks and unsupported IDs."""
     if category not in CATEGORIES:raise ValueError('Unknown category')
@@ -159,6 +178,9 @@ def _analyse(options,category,on_progress=None):
         'additionalProperties':False}}},'required':['moments'],'additionalProperties':False}
     with _lock:
         _start()
+        original_options=options
+        options=[dict(c,text=section) for c in original_options for section in context_sections(c['text'])]
+        _metrics['transcript_sections']=len(options)
         for offset in range(len(options)):
             batch=options[offset:offset+1]
             quotes=source_quotes(batch[0]['text'])
@@ -184,7 +206,7 @@ def _analyse(options,category,on_progress=None):
                 'Give a brief reason grounded in the transcript. Do not infer unseen people, emotion or events. '
                 'Use an empty emoji unless clearly supported. Return the required JSON object.')
             prompt='<|im_start|>system\n'+instructions+'<|im_end|>\n<|im_start|>user\n'+json.dumps(
-                [{'id':c['id'],'transcript':c['text'],'allowed_quotes':quotes} for c in batch])+'<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
+                [{'id':c['id'],'transcript':c['text'],'allowed_quotes':quotes} for c in batch],ensure_ascii=False)+'<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
             try:
                 tokens=_request('/tokenize',dict(content=prompt,add_special=False),timeout=15)['tokens']
                 if len(tokens)>1250:
@@ -213,7 +235,12 @@ def _analyse(options,category,on_progress=None):
                     emoji=item.get('emoji','') if item.get('emoji') in ('idea','laugh','heart','fire','pin') else '',
                     engine='local '+MODEL.stem))
             if on_progress:on_progress((offset+len(batch))/max(1,len(options)))
-    return sorted(results,key=lambda c:c['score'],reverse=True)
+    # One source candidate may have many context sections; return it once.
+    merged={}
+    for item in results:
+        prior=merged.get(item['id'])
+        if prior is None or (item['suitable'],item['score'])>(prior['suitable'],prior['score']):merged[item['id']]=item
+    return sorted(merged.values(),key=lambda c:c['score'],reverse=True)
 
 
 def analyse(options,category,on_progress=None):
