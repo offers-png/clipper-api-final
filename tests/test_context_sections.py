@@ -44,6 +44,7 @@ class ContextTests(unittest.TestCase):
    with patch.object(legacy,'ASSISTANT_JOBS',Path(folder)),patch.object(legacy.studio,'_pool',Immediate()),patch.object(legacy.studio_ai,'status',return_value=dict(ready=True)),patch.object(legacy,'answer',return_value=dict(reply='Explicit contract fixture',sections_analyzed=2,engine='fixture')):
     r=client.post('/studios-api/local-original/assistant-jobs',headers={'Authorization':'Bearer owner-fixture'},json=dict(transcript='actual source '*1400,prompt='Summarize'))
     self.assertEqual(r.status_code,202,r.text);jid=r.json()['id']
-    self.assertEqual(client.get('/studios-api/local-original/assistant-jobs/'+jid,headers={'Authorization':'Bearer owner-fixture'}).status_code,200)
+    completed=client.get('/studios-api/local-original/assistant-jobs/'+jid,headers={'Authorization':'Bearer owner-fixture'})
+    self.assertEqual(completed.status_code,200);self.assertEqual(completed.json()['sections_completed'],2)
     self.assertEqual(client.get('/studios-api/local-original/assistant-jobs/'+jid,headers={'Authorization':'Bearer other-fixture'}).status_code,404)
     self.assertEqual(client.get('/studios-api/local-original/assistant-jobs/'+jid).status_code,401)

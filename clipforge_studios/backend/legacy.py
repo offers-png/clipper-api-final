@@ -64,7 +64,7 @@ def assistant_worker(job,body):
         update(status='running',stage='Preparing transcript sections')
         def progress(i,total):update(stage=f'Analyzing section {i+1} of {total}',sections_total=total,sections_completed=i)
         result=answer(body,progress)
-        update(status='completed',stage='Ready',**result)
+        update(status='completed',stage='Ready',sections_total=result['sections_analyzed'],sections_completed=result['sections_analyzed'],**result)
     except Exception as error:update(status='failed',stage='Stopped',error=str(error))
 
 
@@ -86,7 +86,11 @@ def register(app):
         # Writers use a small JSON file; retry a concurrent progress read.
         import time
         for attempt in range(3):
-            try:return json.loads(path.read_text(encoding='utf-8'))
+            try:
+                data=json.loads(path.read_text(encoding='utf-8'))
+                if data.get('status')=='completed' and data.get('sections_analyzed'):
+                    data.update(sections_completed=data['sections_analyzed'],sections_total=data['sections_analyzed'])
+                return data
             except json.JSONDecodeError:time.sleep(.01)
         raise HTTPException(503,'Progress is updating; retry this status request')
 
