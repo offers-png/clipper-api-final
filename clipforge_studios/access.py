@@ -164,13 +164,15 @@ class StudioAccess(BaseHTTPMiddleware):
             if request.client is None or request.client.host not in ('127.0.0.1','::1','localhost','testclient'):return JSONResponse({'detail':'Local Studio API accepts loopback clients only'},403)
             return await call_next(request)
         if path=='/health':return JSONResponse(dict(ok=True,service='clipforge-studios',authentication_required=True,paid_generation_auto_enabled=False))
-        op=None;context=None
+        op=None;context=None;kie_context=None
         try:
             header=request.headers.get('authorization','')
             if not header.lower().startswith('bearer ') or not 1<len(header)<16384:raise HTTPException(401,'Sign in to use Studio processing')
             if not header[7:].strip():raise HTTPException(401,'Sign in to use Studio processing')
             actor=await asyncio.to_thread(self.access.authenticate,header[7:].strip())
             if not actor or not actor.get('id') or not actor.get('email'):raise HTTPException(401,'Session is invalid or expired')
+            from .backend import kie_budget
+            kie_context=kie_budget.actor.set(actor)
             key=resource_key(path)
             if key and not self.access.owns(key,actor['id']):raise HTTPException(404,'Studio resource not found')
             if request.method=='POST' and 'application/json' in request.headers.get('content-type',''):
@@ -197,3 +199,4 @@ class StudioAccess(BaseHTTPMiddleware):
             return JSONResponse({'detail':'Studio access or processing could not be completed safely'},503)
         finally:
             if context is not None:operation.reset(context)
+            if kie_context is not None:kie_budget.actor.reset(kie_context)

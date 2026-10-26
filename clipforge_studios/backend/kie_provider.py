@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 import uuid
 import requests
+from . import kie_budget
 
 API='https://api.kie.ai/api/v1/jobs'
 UPLOAD='https://kieai.redpandaai.co/api/file-stream-upload'
@@ -50,10 +51,15 @@ class KieClient:
         self.session.trust_env=False  # No implicit .netrc credentials or proxy auth.
         self.clock=clock or time.monotonic;self.sleep=sleep or time.sleep
 
-    def available(self):return bool(self._key) and os.getenv('CLIPFORGE_KIE_ALLOW_PAID_REQUESTS')=='1'
+    def available(self):
+        if kie_budget.scoped():return bool(self._key) and kie_budget.available()
+        return bool(self._key) and os.getenv('CLIPFORGE_KIE_ALLOW_PAID_REQUESTS')=='1'
 
     def require_approval(self):
         if not self._key:raise KieError('KIE API key is not configured on the server')
+        if kie_budget.scoped():
+            kie_budget.require_ticket()
+            return
         if not self.available():raise KieError('KIE paid requests are disabled pending explicit approval')
 
     def _read(self,response,limit):
@@ -91,9 +97,11 @@ class KieClient:
         return safe_url(result.get('downloadUrl'))
 
     def task(self,model,inputs):
+        if kie_budget.scoped():kie_budget.claim_submission(model,inputs)
         created=self._json('POST',API+'/createTask',json={'model':model,'input':inputs})
         task_id=created.get('taskId','')
         if not isinstance(task_id,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,160}',task_id):raise KieError('KIE returned an invalid task ID')
+        if kie_budget.scoped():kie_budget.record_task(task_id)
         deadline=self.clock()+self.timeout;interval=2
         while self.clock()<deadline:
             data=self._json('GET',API+'/recordInfo',params={'taskId':task_id})
@@ -138,12 +146,18 @@ class KieClient:
         return self.download(self.task(model,inputs),'image')
 
 def reason(client):
+    if kie_budget.scoped():
+        return 'Account-only KIE test: one 5-second 720p video, 80 credits (approximately $0.40), maximum approved budget $1. No automatic retries.' if client.available() else 'KIE is restricted to one approved account and one video test. This account is not enabled or the test attempt has already been used.'
     return 'KIE AI is configured for generation. Each generation sends reference media to KIE and uses paid credits; remote authentication is verified when a request runs.' if client.available() else 'KIE API key is not configured on the server' if not client._key else 'KIE AI is configured using the existing server key. Paid generation is disabled pending approval; no additional API key is needed.'
 
 class KieVideoProvider:
     def __init__(self,client):self.client=client
-    def status(self):return dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
+    def status(self):return dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
     def generate(self,image_path,request):
+        if kie_budget.scoped():
+            with kie_budget.attempt(request):return self._generate(image_path,request)
+        return self._generate(image_path,request)
+    def _generate(self,image_path,request):
         self.client.require_approval()
         if request.duration not in range(2,16) or request.ratio not in ('16:9','9:16','1:1'):raise KieError('Wan 2.7 supports 2–15 seconds and the prepared reference aspect ratios')
         styles={'Cinematic':'Cinematic camera movement.','Natural movement':'Subtle natural movement.','Camera zoom':'Slow camera zoom.','Camera pan':'Slow camera pan.','Animated character':'Animate the reference character consistently.','Custom prompt':''}
@@ -161,8 +175,9 @@ class KieVideoProvider:
 
 class KieImageProvider:
     def __init__(self,client):self.client=client
-    def status(self):return dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Nano Banana Edit',model=IMAGE_MODEL,reason=reason(self.client),paid=True)
+    def status(self):return dict(available=False if kie_budget.scoped() else self.client.available(),configured=bool(self.client._key),name='KIE AI · Nano Banana Edit',model=IMAGE_MODEL,reason='Image generation is excluded from the approved video-only test.' if kie_budget.scoped() else reason(self.client),paid=True)
     def generate(self,concept,references):
+        if kie_budget.scoped():raise KieError('Image generation is excluded from the approved video-only test')
         prompt=('Create a professional thumbnail artwork based on the actual reference image and this proposed creative brief. '
             'Keep the reference subject consistent. Do not invent factual events. Leave space for editable headline text; do not bake a title into the image. '+str(concept.get('image_prompt','')))
         return self.client.generate_image(prompt,references=references)
