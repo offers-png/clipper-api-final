@@ -3,7 +3,8 @@ import json
 import tempfile
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,Mock
+import subprocess
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from clipforge_studios.backend import thumbnail_ai as thumb, studio_ai, studio_memory, thumbnail_vision
@@ -77,5 +78,30 @@ class ThumbnailTests(unittest.TestCase):
    result=thumb.plan([],[dict(time=1.5,description='A red flower among green leaves')])
   self.assertEqual(len(result['concepts']),3)
   self.assertTrue(all(c['evidence_kind']=='visual' and c['time']==1.5 for c in result['concepts']))
+ def test_small_container_profile_reduces_scratch_and_cache_not_context(self):
+  with tempfile.TemporaryDirectory() as temp:
+   model=Path(temp)/'small.gguf';model.write_bytes(b'fixture')
+   with patch.object(studio_ai,'MODEL',model),patch.object(studio_memory,'container_limit',return_value=(2*1024**3,1024**3)):
+    settings=studio_ai.runtime_settings();command=studio_ai.runtime_command()
+   self.assertEqual(settings['context'],2048);self.assertEqual(settings['batch'],32)
+   self.assertEqual(settings['microbatch'],8);self.assertEqual(settings['threads'],2)
+   self.assertEqual(settings['cache_type_v'],'q8_0');self.assertIn('--flash-attn',command)
+ def test_other_machines_keep_existing_cpu_settings(self):
+  with patch.object(studio_memory,'container_limit',return_value=(None,None)):
+   self.assertEqual(studio_ai.runtime_settings(),studio_ai.CPU_SETTINGS)
+ def test_memory_guard_kills_only_its_stuck_runtime_promptly(self):
+  process=Mock(pid=123);process.poll.return_value=None
+  process.wait.side_effect=subprocess.TimeoutExpired('owned-runtime',3)
+  event=Mock();event.wait.return_value=False
+  with patch.object(studio_ai,'_memory_error',None),patch.object(studio_ai,'_metrics',{}),patch.object(studio_memory,'available',return_value=768*1024**2-1),patch.object(studio_memory,'working_set',return_value=1):
+   studio_ai._watch(process,event)
+   self.assertIn('stopped safely',studio_ai._memory_error)
+  process.terminate.assert_called_once();process.kill.assert_called_once()
+ def test_closed_model_cache_advice_is_limited_to_explicit_files(self):
+  with tempfile.TemporaryDirectory() as temp:
+   model=Path(temp)/'model.gguf';model.write_bytes(b'fixture')
+   with patch.object(studio_memory.os,'posix_fadvise',create=True) as advise,patch.object(studio_memory.os,'POSIX_FADV_DONTNEED',4,create=True):
+    self.assertEqual(studio_memory.release_model_cache(model),7)
+   advise.assert_called_once()
 
 if __name__=='__main__':unittest.main()

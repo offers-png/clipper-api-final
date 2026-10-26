@@ -30,6 +30,7 @@ def describe(frames,on_progress=None):
     if not status()['ready']:return []
     with lock,studio_ai._lock:
         studio_ai.shutdown();release_memory()
+        studio_memory.release_model_cache(MODEL,PROJECTOR)
         free=studio_memory.available()
         required=max(1024**3,MODEL.stat().st_size+PROJECTOR.stat().st_size+512*1024**2)
         if free is not None and free<required:raise RuntimeError('Insufficient RAM for local visual analysis; stopped before loading')
@@ -75,3 +76,4 @@ def describe(frames,on_progress=None):
                 process.terminate()
                 try:process.wait(timeout=10)
                 except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
+            studio_memory.release_model_cache(MODEL,PROJECTOR)

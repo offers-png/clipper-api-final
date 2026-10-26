@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from . import studio, studio_ai, media, transcription, thumbnail_vision
+from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_memory
 from .server import load
 from .inference_lock import lock
 
@@ -161,6 +161,7 @@ def speech_words(source,job):
             result=subprocess.run([str(SPEECH_PYTHON),'-m','clipforge_studios.backend.thumbnail_speech',str(audio),str(output)],
                 env=environment,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=600,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            studio_memory.release_model_cache(transcription.MODEL_PATH/'model.bin')
         if result.returncode or not output.is_file():raise ValueError('Offline transcription worker failed or lacked memory. No cloud fallback was used.')
         data=json.loads(output.read_text(encoding='utf-8'))
         source.update(data)

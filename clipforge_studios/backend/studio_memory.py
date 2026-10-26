@@ -4,6 +4,25 @@ from ctypes import wintypes
 import os
 from pathlib import Path
 
+def release_model_cache(*paths):
+    """Advise away clean pages of our closed model files, never global caches.
+
+    Linux charges recently used, unmapped weights to the container's active
+    file cache. Release those after serial model phases so the next model's
+    conservative startup check is not blocked by unused predecessor weights.
+    Windows has no such call and remains unchanged.
+    """
+    advised=0
+    if not hasattr(os,'posix_fadvise'):return advised
+    for value in paths:
+        try:
+            path=Path(value)
+            with path.open('rb') as stream:
+                os.posix_fadvise(stream.fileno(),0,0,os.POSIX_FADV_DONTNEED)
+                advised+=path.stat().st_size
+        except OSError:pass
+    return advised
+
 
 def container_limit():
     """Read the existing cgroup allocation; never infer capacity from host RAM."""
