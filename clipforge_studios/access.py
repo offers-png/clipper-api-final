@@ -56,7 +56,7 @@ def canonical(path):
 
 def resource_key(path):
     path=canonical(path)
-    match=re.match(r'^/(?:studio/(?:jobs|files)|editor/(?:jobs|assets|files)|(?:image-video|video-generator)/jobs|thumbnail-ai/jobs|api/videos|local-original/batches)/([a-f0-9]{32})(?:/|$)',path)
+    match=re.match(r'^/(?:studio/(?:jobs|files)|editor/(?:jobs|assets|files)|(?:image-video|video-generator)/jobs|thumbnail-ai/jobs|api/videos|local-original/(?:batches|assistant-jobs))/([a-f0-9]{32})(?:/|$)',path)
     if match:return 'entity:'+match[1]
     if path.startswith(('/media/','/api/clips/')):return 'url:'+path
     return None

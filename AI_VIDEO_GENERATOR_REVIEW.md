@@ -40,11 +40,11 @@ preferring word boundaries. Every section is analyzed serially. Results are merg
 by the original timestamp-backed candidate ID to avoid duplicates. Evidence remains
 source-grounded; clip boundaries and source coverage are unchanged. Thumbnail
 planning also falls back to bounded moment ranking when its prompt exceeds budget.
-Existing context/memory settings and safeguards remain in place.
+The editing assistant also analyzes ordered sections, returns section-labeled answers, and uses an authenticated, owned background job so long requests can be polled. The accepted transcript limit increases to 120,000 characters. Existing synchronous URLs remain compatible. Existing context/memory settings and safeguards remain in place.
 
 ## Local verification
 
-144 backend tests, 31 frontend tests, five real-media integration tests and Vite
+146 backend tests, 31 frontend tests, five real-media integration tests and Vite
 builds passed. Simulated KIE transports cover all four model/mode combinations,
 FFmpeg result validation, pricing, incompatible models, ratio/model swaps, quotes
 without submission and confirmation requirements. These media fixtures are not
@@ -58,3 +58,5 @@ Paid API submissions are prohibited during release testing. Live quotes, UI,
 authorization and preservation of the spending cap must be verified separately
 after deployment. Actual KIE synthesis/latency/output quality remain untested by
 this release unless a separate spending confirmation is provided.
+
+A second real-Qwen assistant stress test counted 1,793 input tokens (above the former 1,250-token rejection) and completed six ordered sections with the existing Qwen3-0.6B model. No paid or external analysis API was used.
