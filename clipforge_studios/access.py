@@ -56,13 +56,13 @@ def canonical(path):
 
 def resource_key(path):
     path=canonical(path)
-    match=re.match(r'^/(?:studio/(?:jobs|files)|editor/(?:jobs|assets|files)|image-video/jobs|thumbnail-ai/jobs|api/videos|local-original/batches)/([a-f0-9]{32})(?:/|$)',path)
+    match=re.match(r'^/(?:studio/(?:jobs|files)|editor/(?:jobs|assets|files)|(?:image-video|video-generator)/jobs|thumbnail-ai/jobs|api/videos|local-original/batches)/([a-f0-9]{32})(?:/|$)',path)
     if match:return 'entity:'+match[1]
     if path.startswith(('/media/','/api/clips/')):return 'url:'+path
     return None
 
 def metered(path):
-    return path in ('/studio/jobs','/editor/jobs','/image-video/jobs','/local-original/manual') or bool(re.fullmatch(r'/api/videos/[a-f0-9]{32}/selection|/thumbnail-ai/jobs/[a-f0-9]{32}/generate',path))
+    return path in ('/studio/jobs','/editor/jobs','/image-video/jobs','/video-generator/jobs','/local-original/manual') or bool(re.fullmatch(r'/api/videos/[a-f0-9]{32}/selection|/thumbnail-ai/jobs/[a-f0-9]{32}/generate',path))
 
 class Access:
     def __init__(self,path,authenticate=verified_user,access=clip_access,record=record_clip,limit=trial_limit):

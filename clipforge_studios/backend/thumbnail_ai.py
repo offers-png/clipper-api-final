@@ -111,8 +111,16 @@ def plan(words,observations=()):
                 prompt='<|im_start|>system\n'+instructions+'<|im_end|>\n<|im_start|>user\n'+json.dumps(dict(
                     approach=approach,transcript=text,allowed_titles=choices,
                     frame_observations=[dict(time=o['time'],description=o['description'][:120]) for o in observations]))+'<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
-                if len(studio_ai._request('/tokenize',dict(content=prompt,add_special=False))['tokens'])>1550:
-                    raise ValueError('Thumbnail context exceeds the safe model budget; no dialogue was silently omitted.')
+                if len(studio_ai._request('/tokenize',dict(content=prompt,add_special=False))['tokens'])>1350:
+                    # Rank all source phrases in bounded contexts, then give this
+                    # design one grounded, unused moment rather than overflowing.
+                    ranked=studio_ai._analyse(rows,'best')
+                    by_id={row['id']:row for row in rows}
+                    eligible=[by_id[item['id']] for item in ranked if item['suitable'] and studio_ai.normal(by_id[item['id']]['text']) not in titles]
+                    if not eligible:raise ValueError('No additional suitable source moment for a distinct thumbnail')
+                    selected=eligible[0]
+                    choices=[selected['text']];fields['title']['enum']=choices
+                    prompt='<|im_start|>system\n'+instructions+'<|im_end|>\n<|im_start|>user\n'+json.dumps(dict(approach=approach,transcript=selected['text'],allowed_titles=choices),ensure_ascii=False)+'<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
                 result=studio_ai._request('/completion',dict(prompt=prompt,temperature=.3,n_predict=350,json_schema=schema,cache_prompt=False,stop=['<|im_end|>']))
                 c=json.loads(result['content']);c['evidence']=c['title']
                 if not studio_ai.grounded(c['title'],text):raise ValueError('AI returned an unsupported title/evidence; results rejected')

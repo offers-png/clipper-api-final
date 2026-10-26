@@ -7,13 +7,16 @@ from typing import Literal, Protocol
 import uuid
 import threading
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from . import editor
-from . import kie_account
+from . import kie_account,video_models
 from contextlib import nullcontext
 
 class Generation(BaseModel):
-    image_id:str=Field(pattern='^[a-f0-9]{32}$')
+    _progress=PrivateAttr(default=None)
+    image_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
+    mode:Literal['text','image']='image'
+    model:str|None=None
     prompt:str=Field(default='',max_length=2000)
     duration:int=Field(default=5,ge=2,le=30)
     ratio:Literal['16:9','9:16','1:1']='16:9'
@@ -22,6 +25,20 @@ class Generation(BaseModel):
     confirm_spend:bool=False
 
 def binding(body):return body.model_dump(exclude={'quote_id','confirm_spend'})
+
+def validate(body):
+    selected=video_models.resolve(binding(body))
+    video_models.effective_prompt(binding(body))
+    if body.mode=='text':
+        if body.image_id:raise HTTPException(422,'Text-to-video does not use an uploaded image')
+        if not body.prompt.strip():raise HTTPException(422,'Enter a text prompt')
+    else:
+        if not body.image_id:raise HTTPException(422,'Upload a reference image')
+        try:image=editor.asset(body.image_id)
+        except Exception:raise HTTPException(404,'Uploaded image not found')
+        if image['kind']!='image':raise HTTPException(422,'Choose a still image')
+    if body.motion=='Custom prompt' and not body.prompt.strip():raise HTTPException(422,'Enter a custom motion prompt')
+    return selected
 
 class VideoProvider(Protocol):
     """Approved adapters synthesize actual video bytes from the image and request.
@@ -47,9 +64,10 @@ def worker(job,body):
     folder=editor.JOBS/job['id'];folder.mkdir(exist_ok=True)
     try:
         job.update(status='running',stage='Generating with connected video provider')
+        body._progress=lambda state:job.update(stage='KIE: '+state)
         try:
             with kie_account.execution(job['paid_quote_id']) if kie_account.active() else nullcontext():
-                raw=provider.generate(Path(editor.asset(body.image_id)['path']),body)
+                raw=provider.generate(Path(editor.asset(body.image_id)['path']) if body.image_id else None,body)
         except Exception:raise RuntimeError('Video provider request failed. It may still finish remotely; check the provider dashboard before retrying. No automatic paid retry or replacement result was attempted.') from None
         if not isinstance(raw,bytes) or len(raw)>512*1024**2:raise ValueError('Provider returned invalid or oversized video')
         p=folder/'provider-video.input';p.write_bytes(raw)
@@ -60,7 +78,7 @@ def worker(job,body):
         # Normalize actual synthesized output to MP4 for the shared editor.
         editor.run(['-i',str(p.resolve()),'-map','0:v:0','-map','0:a?','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','finished.mp4'],folder)
         a=editor.save_asset(folder/'finished.mp4','AI generated video')
-        job.update(status='completed',stage='Ready',asset=a,url=f'/editor/files/{job["id"]}/finished.mp4',provider=provider.status()['name'])
+        job.update(status='completed',stage='Ready',asset=a,url=f'/editor/files/{job["id"]}/finished.mp4',provider=provider.status()['name'],model=video_models.resolve(binding(body))['id'],mode=body.mode)
     except Exception as e:job.update(status='failed',stage='Stopped',error=str(e))
     finally:
         if job.get('paid_quote_id'):kie_account.finish(job['paid_quote_id'],job.get('status')=='completed')
@@ -68,26 +86,25 @@ def worker(job,body):
         (folder/'image-video.json').write_text(json.dumps(job),encoding='utf-8')
 
 def register(app):
+    @app.get('/video-generator/capabilities')
     @app.get('/image-video/capabilities')
-    def capabilities():return provider.status()
+    def capabilities():
+        result=provider.status();result.setdefault('models',[]);return result
 
+    @app.post('/video-generator/quote')
     @app.post('/image-video/quote')
     def quote(body:Generation):
         if not kie_account.active():raise HTTPException(503,'Account generation is not configured')
         kie_account.user()
-        try:image=editor.asset(body.image_id)
-        except Exception:raise HTTPException(404,'Uploaded image not found')
-        if image['kind']!='image':raise HTTPException(422,'Choose a still image')
+        validate(body)
         try:return kie_account.quote('video',binding(body),provider.client.credit_balance())
         except HTTPException:raise
         except Exception:raise HTTPException(503,'KIE credit balance could not be verified; no paid job was submitted') from None
 
+    @app.post('/video-generator/jobs',status_code=202)
     @app.post('/image-video/jobs',status_code=202)
     def generate(body:Generation):
-        try:image=editor.asset(body.image_id)
-        except Exception:raise HTTPException(404,'Uploaded image not found')
-        if image['kind']!='image':raise HTTPException(422,'Image-to-video requires a still image')
-        if body.motion=='Custom prompt' and not body.prompt.strip():raise HTTPException(422,'Enter a custom motion prompt')
+        validate(body)
         caps=provider.status()
         if not caps['available']:raise HTTPException(503,caps['reason'])
         if body.duration not in caps['durations'] or body.ratio not in caps['ratios']:raise HTTPException(422,'Connected provider does not support this duration/aspect ratio')
@@ -101,6 +118,7 @@ def register(app):
             STATE[job['id']]=job;POOL.submit(worker,job,body)
         return job
 
+    @app.get('/video-generator/jobs/{job_id}')
     @app.get('/image-video/jobs/{job_id}')
     def status(job_id:str):
         if not re.fullmatch('[a-f0-9]{32}',job_id):raise HTTPException(404)
