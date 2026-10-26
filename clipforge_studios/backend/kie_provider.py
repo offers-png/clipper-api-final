@@ -138,7 +138,7 @@ class KieClient:
         return self.download(self.task(model,inputs),'image')
 
 def reason(client):
-    return 'KIE AI connected. Generation sends reference media to KIE and uses paid credits.' if client.available() else 'KIE API key is not configured on the server' if not client._key else 'KIE adapters are configured; paid requests are disabled pending approval'
+    return 'KIE AI is configured for generation. Each generation sends reference media to KIE and uses paid credits; remote authentication is verified when a request runs.' if client.available() else 'KIE API key is not configured on the server' if not client._key else 'KIE AI is configured using the existing server key. Paid generation is disabled pending approval; no additional API key is needed.'
 
 class KieVideoProvider:
     def __init__(self,client):self.client=client

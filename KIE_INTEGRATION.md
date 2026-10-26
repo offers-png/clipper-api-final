@@ -1,4 +1,14 @@
-# KIE AI adapters — local review, not pushed or deployed
+# KIE AI adapters — integration review
+
+## Current connection investigation (2026-10-26)
+
+Live authenticated capability checks returned the generic unavailable image/video providers, not KIE. The deployed backend omitted the earlier KIE feature commit. Render's environment page contains the existing `CLIPFORGE_VIDEO_PROVIDER_API_KEY` variable; neither provider factory nor the paid-request opt-in is present. Only variable names were inspected; the secret value was not read or changed.
+
+Branch `fix/kie-provider-connection-20261026` reapplies the earlier adapters to the current backend, preserving newer URL downloading, subscription handling and Studio access guards. Blank factories select built-in KIE from the existing server key. Capability messages distinguish configured credentials from approved execution and do not claim remote authentication has been tested. Production remains unchanged until this backend update is deployed.
+
+Current verification: 88 backend tests and 20 frontend tests passed; the existing frontend production build passed. KIE HTTP is blocked throughout provider tests. Tests exercise official payload construction, uploads, polling, error redaction, three-image background rendering, downloads and video normalization/editor import with FFmpeg-generated fixtures. An added HTTP capability/approval test verifies that configured adapters remain unavailable for paid execution. The optional image smoke tool's default dry run reported zero network requests. No actual KIE image/video generation or remote authentication test ran, and no API credits were spent.
+
+Thumbnail video-to-concept planning still requires the separately unavailable server Whisper/Qwen models. Connecting an image-generation adapter does not supply transcript analysis or semantic vision; the full automatic video-to-thumbnail workflow is not yet production-ready. Existing manual Thumbnail Creator editing remains intact. No model download, production setting change, merge or deployment was performed in this investigation.
 
 These changes connect the existing video-provider and thumbnail-provider contracts to KIE. Existing authentication, billing, Supabase/OpenAI integrations and production credentials are unchanged. The previous local-only Studio API restriction remains in place; this update does not authorize production activation.
 

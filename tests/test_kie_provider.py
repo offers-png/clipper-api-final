@@ -151,6 +151,26 @@ class KieTests(unittest.TestCase):
         with patch.dict(os.environ,{'CLIPFORGE_KIE_ALLOW_PAID_REQUESTS':'0'}):
             with self.assertRaises(kie.KieError):smoke_main(['--approve-paid-image-test','--output',str(self.root/'new-output.png')])
 
+    def test_configured_capabilities_and_routes_do_not_spend(self):
+        host=FastAPI();image_video.register(host);thumbnail_ai.register(host)
+        jid=uuid.uuid4().hex
+        job=dict(id=jid,status='completed',analysis={'concepts':[]})
+        with patch.dict(os.environ,{'CLIPFORGE_KIE_ALLOW_PAID_REQUESTS':'0','CLIPFORGE_VIDEO_PROVIDER_FACTORY':'','CLIPFORGE_IMAGE_PROVIDER_FACTORY':''}), \
+                patch.object(image_video,'provider',load(image_video.Unavailable())), \
+                patch.object(thumbnail_ai,'provider',load(thumbnail_ai.UnavailableProvider(),kind='image')), \
+                patch.object(thumbnail_ai,'JOBS',{jid:job}):
+            http=TestClient(host)
+            for path,key in [('/image-video/capabilities',None),('/thumbnail-ai/capabilities','image_generation')]:
+                result=http.get(path)
+                self.assertEqual(result.status_code,200)
+                status=result.json()[key] if key else result.json()
+                self.assertTrue(status['configured']);self.assertFalse(status['available'])
+                self.assertIn('no additional API key',status['reason'])
+                self.assertNotIn(KEY,result.text)
+            result=http.post(f'/thumbnail-ai/jobs/{jid}/generate',json={})
+            self.assertEqual(result.status_code,503)
+            self.assertIn('pending approval',result.json()['detail'])
+
     def test_10_async_thumbnail_pipeline_and_duplicate_guard(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);jid=uuid.uuid4().hex;folder=root/jid;folder.mkdir()
