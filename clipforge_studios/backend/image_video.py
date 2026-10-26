@@ -5,9 +5,12 @@ import json
 import re
 from typing import Literal, Protocol
 import uuid
+import threading
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from . import editor
+from . import kie_account
+from contextlib import nullcontext
 
 class Generation(BaseModel):
     image_id:str=Field(pattern='^[a-f0-9]{32}$')
@@ -15,6 +18,10 @@ class Generation(BaseModel):
     duration:int=Field(default=5,ge=2,le=30)
     ratio:Literal['16:9','9:16','1:1']='16:9'
     motion:Literal['Cinematic','Natural movement','Camera zoom','Camera pan','Animated character','Custom prompt']='Cinematic'
+    quote_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
+    confirm_spend:bool=False
+
+def binding(body):return body.model_dump(exclude={'quote_id','confirm_spend'})
 
 class VideoProvider(Protocol):
     """Approved adapters synthesize actual video bytes from the image and request.
@@ -34,13 +41,16 @@ from .video_provider_config import load as load_provider
 provider:VideoProvider=load_provider(Unavailable())
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='image-video-provider')
 STATE={}
+STATE_LOCK=threading.Lock()
 
 def worker(job,body):
     folder=editor.JOBS/job['id'];folder.mkdir(exist_ok=True)
     try:
         job.update(status='running',stage='Generating with connected video provider')
-        try:raw=provider.generate(Path(editor.asset(body.image_id)['path']),body)
-        except Exception:raise RuntimeError('Video provider request failed; verify the server-side adapter configuration. No generated result was substituted.') from None
+        try:
+            with kie_account.execution(job['paid_quote_id']) if kie_account.active() else nullcontext():
+                raw=provider.generate(Path(editor.asset(body.image_id)['path']),body)
+        except Exception:raise RuntimeError('Video provider request failed. It may still finish remotely; check the provider dashboard before retrying. No automatic paid retry or replacement result was attempted.') from None
         if not isinstance(raw,bytes) or len(raw)>512*1024**2:raise ValueError('Provider returned invalid or oversized video')
         p=folder/'provider-video.input';p.write_bytes(raw)
         info=editor.probe(p)
@@ -53,12 +63,24 @@ def worker(job,body):
         job.update(status='completed',stage='Ready',asset=a,url=f'/editor/files/{job["id"]}/finished.mp4',provider=provider.status()['name'])
     except Exception as e:job.update(status='failed',stage='Stopped',error=str(e))
     finally:
+        if job.get('paid_quote_id'):kie_account.finish(job['paid_quote_id'],job.get('status')=='completed')
         (folder/'provider-video.input').unlink(missing_ok=True)
         (folder/'image-video.json').write_text(json.dumps(job),encoding='utf-8')
 
 def register(app):
     @app.get('/image-video/capabilities')
     def capabilities():return provider.status()
+
+    @app.post('/image-video/quote')
+    def quote(body:Generation):
+        if not kie_account.active():raise HTTPException(503,'Account generation is not configured')
+        kie_account.user()
+        try:image=editor.asset(body.image_id)
+        except Exception:raise HTTPException(404,'Uploaded image not found')
+        if image['kind']!='image':raise HTTPException(422,'Choose a still image')
+        try:return kie_account.quote('video',binding(body),provider.client.credit_balance())
+        except HTTPException:raise
+        except Exception:raise HTTPException(503,'KIE credit balance could not be verified; no paid job was submitted') from None
 
     @app.post('/image-video/jobs',status_code=202)
     def generate(body:Generation):
@@ -69,9 +91,14 @@ def register(app):
         caps=provider.status()
         if not caps['available']:raise HTTPException(503,caps['reason'])
         if body.duration not in caps['durations'] or body.ratio not in caps['ratios']:raise HTTPException(422,'Connected provider does not support this duration/aspect ratio')
-        if any(j['status'] in ('queued','running') for j in STATE.values()):raise HTTPException(409,'A video-generation request is already running')
-        job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued')
-        STATE[job['id']]=job;POOL.submit(worker,job,body)
+        with STATE_LOCK:
+            if any(j['status'] in ('queued','running') for j in STATE.values()):raise HTTPException(409,'A video-generation request is already running')
+            job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued')
+            if kie_account.active():
+                try:job['paid_quote_id']=kie_account.reserve(body.quote_id,'video',binding(body),provider.client.credit_balance(),body.confirm_spend)
+                except HTTPException:raise
+                except Exception:raise HTTPException(503,'KIE balance could not be verified; no paid job was submitted') from None
+            STATE[job['id']]=job;POOL.submit(worker,job,body)
         return job
 
     @app.get('/image-video/jobs/{job_id}')

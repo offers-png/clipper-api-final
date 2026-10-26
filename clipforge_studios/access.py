@@ -29,7 +29,8 @@ def auth_client():
 def verified_user(token):
     try:
         user=auth_client().auth.get_user(token).user
-        actor=dict(id=str(uuid.UUID(str(user.id))),email=user.email)
+        actor=dict(id=str(uuid.UUID(str(user.id))),email=user.email,
+                   email_verified=bool(getattr(user,'email_confirmed_at',None)))
         if not actor['email']:raise ValueError()
         return actor
     except HTTPException:raise
@@ -107,6 +108,8 @@ class Access:
         if path=='/api/library/thumbnails':data['items']=[r for r in data.get('items',[]) if self.owns(resource_key(r.get('url','')) or 'missing',user)]
         return data
     def reserve(self,actor):
+        from owner_access import is_owner
+        if is_owner(actor):return dict(manager=self,actor=actor,id=None,submitted=False,owner_development=True)
         with self.lock:
             try:access=self.access(actor['email'])
             except Exception:raise HTTPException(503,'Clip access could not be verified') from None
@@ -126,6 +129,7 @@ class Access:
                 db.execute('INSERT INTO usage VALUES (?,?,?,?,?)',(rid,actor['id'],day,'pending',time.time()))
             return dict(manager=self,actor=actor,id=rid,submitted=False)
     def finish(self,op,success):
+        if op.get('owner_development'):return
         with self.lock:
             with self.db() as db:
                 changed=db.execute("UPDATE usage SET status=? WHERE id=? AND status='pending'",('success' if success else 'failed',op['id'])).rowcount
@@ -164,13 +168,15 @@ class StudioAccess(BaseHTTPMiddleware):
             if request.client is None or request.client.host not in ('127.0.0.1','::1','localhost','testclient'):return JSONResponse({'detail':'Local Studio API accepts loopback clients only'},403)
             return await call_next(request)
         if path=='/health':return JSONResponse(dict(ok=True,service='clipforge-studios',authentication_required=True,paid_generation_auto_enabled=False))
-        op=None;context=None
+        op=None;context=None;kie_context=None
         try:
             header=request.headers.get('authorization','')
             if not header.lower().startswith('bearer ') or not 1<len(header)<16384:raise HTTPException(401,'Sign in to use Studio processing')
             if not header[7:].strip():raise HTTPException(401,'Sign in to use Studio processing')
             actor=await asyncio.to_thread(self.access.authenticate,header[7:].strip())
             if not actor or not actor.get('id') or not actor.get('email'):raise HTTPException(401,'Session is invalid or expired')
+            from .backend import kie_budget
+            kie_context=kie_budget.actor.set(actor)
             key=resource_key(path)
             if key and not self.access.owns(key,actor['id']):raise HTTPException(404,'Studio resource not found')
             if request.method=='POST' and 'application/json' in request.headers.get('content-type',''):
@@ -197,3 +203,4 @@ class StudioAccess(BaseHTTPMiddleware):
             return JSONResponse({'detail':'Studio access or processing could not be completed safely'},503)
         finally:
             if context is not None:operation.reset(context)
+            if kie_context is not None:kie_budget.actor.reset(kie_context)

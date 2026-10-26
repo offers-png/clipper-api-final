@@ -11,7 +11,7 @@ def billing_actor(request):
         user = auth_client().auth.get_user(header.split(' ', 1)[1].strip()).user
         if not user or not user.id or not user.email or not user.email_confirmed_at:
             raise HTTPException(403, 'A verified email is required for billing access')
-        return {'id':str(user.id), 'email':user.email.strip()}
+        return {'id':str(user.id), 'email':user.email.strip(), 'email_verified':True}
     except HTTPException:
         raise
     except Exception:

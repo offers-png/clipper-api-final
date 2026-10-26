@@ -102,7 +102,7 @@ def _load_source(source_id,existing_loader):
 
 
 def _words(data,job):
-    if data.get('words'):return data['words']
+    if data.get('words') and data.get('alignment_version')==3:return data['words']
     update(job,stage='Transcribing actual audio locally',progress=.05)
     audio=Path(media.TMP_DIR)/(job['id']+'.wav')
     try:
@@ -196,10 +196,8 @@ def register(app,existing_loader):
     def capabilities():
         try:import cv2;vision=True
         except ImportError:vision=False
-        from .transcription import MODEL_PATH
-        import importlib.util
-        speech=(MODEL_PATH/'model.bin').is_file() and importlib.util.find_spec('faster_whisper') is not None
-        return dict(ai=studio_ai.status(),transcription=dict(ready=speech,engine='faster-whisper'),face_detection=vision,categories=studio_ai.CATEGORIES,
+        from .transcription import status as speech_status
+        return dict(ai=studio_ai.status(),transcription=speech_status(),face_detection=vision,categories=studio_ai.CATEGORIES,
             scene_transitions=True,emoji_font=Path('C:/Windows/Fonts/seguiemj.ttf').is_file())
 
     @app.post('/studio/sources')
