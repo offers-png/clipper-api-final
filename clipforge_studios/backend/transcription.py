@@ -10,9 +10,17 @@ from .inference_lock import lock as inference_lock
 from . import studio_memory
 
 from .resource_paths import MODELS
-MODEL_PATH = (MODELS/'base.en').resolve()
+MODEL_PATH = Path(os.getenv('CLIPFORGE_LOCAL_MODEL') or MODELS/'base.en').resolve()
 _model = None
 _lock = threading.Lock()
+
+
+def status():
+    import importlib.util
+    installed=importlib.util.find_spec('faster_whisper') is not None
+    present=(MODEL_PATH/'model.bin').is_file()
+    return dict(ready=installed and present,engine='faster-whisper',model=MODEL_PATH.name,
+                library_installed=installed,model_installed=present,download_automatic=False)
 
 
 def release_memory():

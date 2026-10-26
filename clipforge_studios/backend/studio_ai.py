@@ -8,14 +8,15 @@ import time
 import urllib.request
 import urllib.error
 import atexit
+import os
 from . import studio_memory
 from .inference_lock import lock as inference_lock
 from .transcription import release_memory as release_transcription_memory
 
 ROOT=Path(__file__).parent
 from .resource_paths import MODELS, DATA
-MODEL=MODELS/'studio/Qwen3-4B-Q4_K_M.gguf'
-RUNTIME=MODELS/'studio/runtime/llama-server.exe'
+MODEL=Path(os.getenv('CLIPFORGE_ANALYSIS_MODEL') or MODELS/'studio/Qwen3-4B-Q4_K_M.gguf').resolve()
+RUNTIME=Path(os.getenv('CLIPFORGE_LLAMA_SERVER') or MODELS/'studio/runtime'/('llama-server.exe' if os.name=='nt' else 'llama-server')).resolve()
 _process=None
 _lock=threading.RLock()
 _memory_error=None
@@ -58,7 +59,7 @@ CATEGORIES={
 
 
 def status():
-    return dict(ready=MODEL.is_file() and RUNTIME.is_file(),model='Qwen3-4B Q4_K_M',
+    return dict(ready=MODEL.is_file() and RUNTIME.is_file(),model=MODEL.stem,
         category_engine='local language model',download_automatic=False,cpu_settings=CPU_SETTINGS,
         running=_process is not None and _process.poll() is None,memory_error=_memory_error,memory_metrics=dict(_metrics))
 
@@ -85,8 +86,9 @@ def _start():
         _metrics['transcription_release']=released
         free=studio_memory.available()
         if free is not None:_metrics['available_before_start_bytes']=free
-        if free is not None and free<3*1024**3:
-            raise RuntimeError(f'Insufficient memory for conservative Qwen3 startup: {free/1024**3:.2f} GiB available; at least 3 GiB is required to attempt loading. No inference started.')
+        required=3*1024**3 if MODEL.stat().st_size>1024**3 else max(1024**3,MODEL.stat().st_size+512*1024**2)
+        if free is not None and free<required:
+            raise RuntimeError(f'Insufficient memory for conservative analysis startup: {free/1024**3:.2f} GiB available; at least {required/1024**3:.2f} GiB is required. No inference started.')
         log=DATA/'studio-ai.log'
         with log.open('ab') as output:
             _process=subprocess.Popen([str(RUNTIME),'-m',str(MODEL),'--host','127.0.0.1','--port','8002',
@@ -166,7 +168,7 @@ def _analyse(options,category,on_progress=None):
                     hook=item.get('hook_quote','') if grounded(item.get('hook_quote'),c['text']) else '',
                     context=item.get('context_quote','') if grounded(item.get('context_quote'),c['text']) else '',
                     emoji=item.get('emoji','') if item.get('emoji') in ('idea','laugh','heart','fire','pin') else '',
-                    engine='local Qwen3-4B Q4_K_M'))
+                    engine='local '+MODEL.stem))
             if on_progress:on_progress((offset+len(batch))/max(1,len(options)))
     return sorted(results,key=lambda c:c['score'],reverse=True)
 
