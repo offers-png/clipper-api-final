@@ -188,7 +188,7 @@ def reason(client):
 class KieVideoProvider:
     def __init__(self,client):self.client=client
     def status(self):
-        status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
+        status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI Video',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
         if kie_account.active():status.update(kie_account.status(bool(self.client._key)))
         status['models']=video_models.catalog()
         if kie_budget.scoped() and not kie_account.active():
