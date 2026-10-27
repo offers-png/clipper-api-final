@@ -17,7 +17,7 @@ from tests.test_kie_provider import Response,Transport,CDN
 
 USER='00000000-0000-4000-8000-000000000001'
 OTHER='00000000-0000-4000-8000-000000000002'
-INPUT=dict(prompt='Actual reference',first_frame_url=CDN+'/reference.png',duration=5,resolution='720p',prompt_extend=False)
+INPUT=dict(prompt='Subtle movement Subtle natural movement.',first_frame_url=CDN+'/reference.png',duration=5,resolution='720p',prompt_extend=False)
 BINDING=dict(image_id='a'*32,duration=5,ratio='16:9',motion='Natural movement',prompt='Subtle movement')
 
 class CreditsTransport(Transport):

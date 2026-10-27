@@ -50,11 +50,15 @@ def database():
         db.execute('CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY,user TEXT NOT NULL,kind TEXT NOT NULL,fingerprint TEXT NOT NULL,credits INTEGER NOT NULL,held INTEGER NOT NULL,tasks INTEGER NOT NULL,duration INTEGER NOT NULL,state TEXT NOT NULL,expires REAL NOT NULL,created REAL NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS submissions (quote TEXT NOT NULL,ordinal INTEGER NOT NULL,task TEXT,state TEXT NOT NULL,PRIMARY KEY(quote,ordinal))')
         columns={r[1] for r in db.execute('PRAGMA table_info(quotes)')}
-        for name in ('model','ratio'):
+        for name in ('model','ratio','spec','credits_units','held_units'):
             if name not in columns:
-                try:db.execute(f'ALTER TABLE quotes ADD COLUMN {name} TEXT')
+                try:db.execute(f'ALTER TABLE quotes ADD COLUMN {name} '+('INTEGER' if name.endswith('_units') else 'TEXT'))
                 except sqlite3.OperationalError:
                     if name not in {r[1] for r in db.execute('PRAGMA table_info(quotes)')}:raise
+        # Additive migration: existing reservations/exposure stay intact. Monetary
+        # comparisons use integer thousandths of a credit, never floating point.
+        db.execute('UPDATE quotes SET credits_units=CAST(ROUND(credits*1000) AS INTEGER) WHERE credits_units IS NULL')
+        db.execute('UPDATE quotes SET held_units=CAST(ROUND(held*1000) AS INTEGER) WHERE held_units IS NULL')
         db.commit()
         with db:yield db
     finally:db.close()
@@ -66,9 +70,11 @@ def historical(uid):
     try:return int(db.execute("SELECT COALESCE(sum(credits),0) FROM attempts WHERE user=? AND state='submitted'",(uid,)).fetchone()[0])
     finally:db.close()
 
-def held(db,uid):return historical(uid)+int(db.execute('SELECT COALESCE(sum(held),0) FROM quotes WHERE user=?',(uid,)).fetchone()[0])
+def held(db,uid):return Decimal(historical(uid))+Decimal(db.execute('SELECT COALESCE(sum(held_units),0) FROM quotes WHERE user=?',(uid,)).fetchone()[0])/1000
 def fingerprint(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-def usd(credits):return str((Decimal(credits)*Decimal('.005')).quantize(Decimal('.001')))
+def usd(credits):
+    value=Decimal(str(credits))*Decimal('.005')
+    return format(value,'.3f') if value==value.quantize(Decimal('.001')) else format(value,'.5f')
 
 def status(configured):
     try:
@@ -81,20 +87,23 @@ def status(configured):
 
 def quote(kind,binding,balance):
     uid=user();cap=limit()
+    details={}
     if kind=='images':credits,tasks,duration,model=12,3,0,IMAGE_MODEL
     elif kind=='video':
-        selected=video_models.resolve(binding)
+        details=video_models.estimate(binding)
         duration=binding.get('duration')
-        credits,tasks,model=selected['credits_per_second']*duration,1,selected['id']
+        credits,tasks,model=Decimal(str(details['cost_credits'])),1,details['model']
     else:raise HTTPException(422,'Unsupported generation type')
     with database() as db:
         used=held(db,uid)
         pending=db.execute("SELECT 1 FROM quotes WHERE user=? AND state IN ('reserved','uncertain')",(uid,)).fetchone()
         reason='An earlier paid request is still pending or uncertain. Check it before starting another.' if pending else 'The account spending limit would be exceeded.' if used+credits>cap else 'KIE has insufficient credits. Add credits in your KIE account before generating.' if balance<credits else None
         qid=uuid.uuid4().hex
-        db.execute('INSERT INTO quotes (id,user,kind,fingerprint,credits,held,tasks,duration,state,expires,created,model,ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',(qid,uid,kind,fingerprint(binding),credits,0,tasks,duration,'quoted',time.time()+600,time.time(),model,binding.get('ratio','16:9')))
-    return dict(quote_id=qid,kind=kind,count=tasks,model=model,
-        cost_credits=credits,cost_usd=usd(credits),balance_credits=str(balance),spending_limit_usd=usd(cap),
+        db.execute('INSERT INTO quotes (id,user,kind,fingerprint,credits,held,tasks,duration,state,expires,created,model,ratio,spec,credits_units,held_units) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(qid,uid,kind,fingerprint(binding),float(credits),0,tasks,duration,'quoted',time.time()+600,time.time(),model,binding.get('ratio','16:9'),json.dumps(binding),int(Decimal(str(credits))*1000),0))
+    return dict(**details,quote_id=qid,kind=kind,count=tasks,
+        balance_credits=str(balance),spending_limit_usd=usd(cap),
+        **({} if details else dict(model=model,cost_credits=float(credits),cost_usd=usd(credits))),
+        remaining_after_usd=usd(max(0,Decimal(cap)-used-credits)),
         committed_usd=usd(used),remaining_usd=usd(max(0,cap-used)),can_submit=reason is None,
         reason=reason or ('Confirm to send this text prompt to KIE and spend these credits.' if kind=='video' and binding.get('mode')=='text' else 'Confirm to upload reference media to KIE and spend these credits.'),expires_in_seconds=600)
 
@@ -108,9 +117,11 @@ def reserve(qid,kind,binding,balance,confirmed):
         if q['state']!='quoted':raise HTTPException(409,'This quote has already been used; no duplicate submission was made')
         if q['expires']<time.time():raise HTTPException(409,'The quote expired; request a new quote')
         if db.execute("SELECT 1 FROM quotes WHERE user=? AND state IN ('reserved','uncertain')",(uid,)).fetchone():raise HTTPException(409,'A paid request is pending or uncertain; no additional job was submitted')
-        if held(db,uid)+q['credits']>cap:raise HTTPException(403,'The account spending limit would be exceeded')
-        if balance<q['credits']:raise HTTPException(409,'KIE has insufficient credits; no paid request was submitted')
-        db.execute("UPDATE quotes SET state='reserved',held=credits WHERE id=?",(qid,))
+        cost=Decimal(q['credits_units'])/1000
+        if held(db,uid)+cost>cap:raise HTTPException(403,'The account spending limit would be exceeded')
+        if balance<cost:raise HTTPException(409,'KIE has insufficient credits; no paid request was submitted')
+        if kind=='video' and Decimal(str(video_models.estimate(binding)['cost_credits']))!=cost:raise HTTPException(409,'Pricing changed; review a new quote')
+        db.execute("UPDATE quotes SET state='reserved',held=credits,held_units=credits_units WHERE id=?",(qid,))
     return qid
 
 @contextmanager
@@ -133,15 +144,17 @@ def claim_submission(model,inputs,balance):
         valid=model==IMAGE_MODEL and set(inputs)=={'prompt','image_urls','aspect_ratio','output_format'} and inputs.get('output_format')=='png' and inputs.get('aspect_ratio') in ('16:9','9:16','1:1') and len(inputs.get('image_urls',[]))==1
         unit=4
     else:
-        expected=q.get('model') or VIDEO_MODEL
-        newer=expected.startswith('wan/2-7-');text='text-to-video' in expected
-        extra=('ratio' if newer else 'aspect_ratio') if text else ('first_frame_url' if newer else 'image_url')
-        expansion='prompt_extend' if newer else 'enable_prompt_expansion'
-        valid=(model==expected and set(inputs)=={'prompt',extra,'duration','resolution',expansion}
-            and inputs.get('duration')==(q['duration'] if newer else str(q['duration']))
-            and inputs.get('resolution')=='720p' and inputs.get(expansion) is False
-            and (not text or inputs.get(extra)==q.get('ratio')))
-        unit=q['credits']
+        spec=json.loads(q.get('spec') or '{}')
+        # Pre-upgrade quotes expire naturally and cannot authorize a new payload.
+        if not spec:raise RuntimeError('Review a new quote after the model catalog update')
+        selected=video_models.resolve(spec)
+        image_key=next((k for k in ('first_frame_url','image_url','image_urls') if k in inputs),None)
+        reference=inputs.get(image_key) if image_key else None
+        if isinstance(reference,list):reference=reference[0] if len(reference)==1 else None
+        prompt=video_models.effective_prompt(spec) if 'prompt' in spec else inputs.get('prompt')
+        expected_inputs=video_models.payload(spec,prompt,reference)
+        valid=model==selected['provider_model'] and inputs==expected_inputs and isinstance(prompt,str) and bool(prompt.strip())
+        unit=Decimal(q['credits_units'])/1000
     if not valid:raise RuntimeError('KIE request differs from its server-priced quote')
     if balance<unit:raise RuntimeError('KIE balance is insufficient; this paid task was not submitted')
     with database() as db:
@@ -167,4 +180,5 @@ def finish(qid,success):
         rows=db.execute('SELECT state FROM submissions WHERE quote=?',(qid,)).fetchall()
         uncertain=any(r['state']=='submitted' for r in rows)
         attempted=sum(r['state']!='rejected' for r in rows)
-        db.execute('UPDATE quotes SET state=?,held=? WHERE id=?',('uncertain' if uncertain else 'completed' if success else 'failed',attempted*(q['credits']//q['tasks']),qid))
+        units=attempted*(q['credits_units']//q['tasks'])
+        db.execute('UPDATE quotes SET state=?,held=?,held_units=? WHERE id=?',('uncertain' if uncertain else 'completed' if success else 'failed',units/1000,units,qid))

@@ -95,7 +95,7 @@ class KieTests(unittest.TestCase):
         self.assertEqual(payload['input']['duration'],2)
         self.assertEqual(payload['input']['resolution'],'720p')
         self.assertIn('first_frame_url',payload['input']);self.assertNotIn('aspect_ratio',payload['input'])
-        self.assertEqual(kie.KieVideoProvider(c).status()['durations'],list(range(2,16)))
+        self.assertEqual(kie.KieVideoProvider(c).status()['durations'],list(range(1,31)))
 
     def test_04_safe_errors_and_no_paid_retry(self):
         class Failure:
