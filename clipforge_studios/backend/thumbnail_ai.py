@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_memory
 from . import kie_account
+from . import headline_writer
+import logging
 from contextlib import nullcontext
 from .server import load
 from .inference_lock import lock
@@ -170,6 +172,26 @@ def choose_headline(proposed,source,used,context="",retry=None,attempts=2):
         used.add(candidate.casefold());return candidate
     raise ValueError('Could not prepare three distinct thumbnail headlines')
 
+def improve_headlines(analysis,source_text):
+    """Use OpenAI headlines where available and valid; keep the local headline otherwise."""
+    concepts=analysis['concepts'];analysis['headline_engine']='local '+studio_ai.MODEL.stem
+    if not headline_writer.enabled():return analysis
+    try:
+        proposed=headline_writer.request_headlines(
+            [(style,c['evidence']) for style,c in zip(STYLES.values(),concepts)],source_text,HEADLINE_RULES)
+    except Exception as error:
+        logging.getLogger(__name__).warning('OpenAI headlines unavailable (%s); kept local headlines',type(error).__name__)
+        analysis['headline_engine']+=' (OpenAI unavailable)';return analysis
+    used=set();from_openai=0
+    for c,candidate in zip(concepts,proposed):
+        candidate=punchy(candidate,source_text)
+        if candidate and candidate.casefold() not in used:c['title']=candidate;from_openai+=1
+        elif c['title'].casefold() in used:c['title']=fallback_headline(c['evidence'])
+        used.add(c['title'].casefold())
+    name='OpenAI '+headline_writer.model()
+    analysis['headline_engine']=name if from_openai==len(concepts) else f'{name} ({from_openai} of {len(concepts)}; rest local)'
+    return analysis
+
 def plan(words,observations=()):
     text=' '.join(w['word'] for w in words)
     if not text:return visual_plan(observations)
@@ -304,6 +326,9 @@ def worker(job,source):
         if not observations:job['warnings'].append('Visual subject model unavailable. Main topic and moments are based on dialogue only; no visual identities or emotions are inferred.')
         job['stage']='Preparing three transcript-grounded concepts with local Qwen'
         analysis=plan(words,observations)
+        # After the local model has released its memory.
+        job['stage']='Writing thumbnail headlines'
+        improve_headlines(analysis,' '.join(w['word'] for w in words) or ' '.join(o['description'] for o in observations))
         for i,concept in enumerate(analysis['concepts']):
             t=min(source['duration']-.04,max(0,(concept['time']+concept['end'])/2))
             path=folder/f'reference_{i}.jpg'
@@ -365,7 +390,7 @@ def render_images(job):
 
 def register(app):
     @app.get('/thumbnail-ai/capabilities')
-    def capabilities():return dict(image_generation=provider.status(),text_analysis=studio_ai.status(),transcription=speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'])
+    def capabilities():return dict(image_generation=provider.status(),text_analysis=studio_ai.status(),transcription=speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'],headlines=headline_writer.status())
 
     @app.post('/thumbnail-ai/jobs',status_code=202)
     def create(body:Request):
