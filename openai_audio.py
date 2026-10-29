@@ -86,3 +86,30 @@ def transcribe(client, source, max_bytes=OPENAI_MAX_BYTES):
                                      end=round(_field(segment, 'end') + offset, 3),
                                      text=(_field(segment, 'text') or '').strip()))
     return ' '.join(t for t in texts if t), segments
+
+
+def transcribe_words(client, source, max_bytes=OPENAI_MAX_BYTES):
+    """[{word, start, end}] for the whole source; times are in source seconds.
+
+    Whisper's word list has no punctuation, so each segment's closing . ! or ?
+    is added to its last word to keep sentence boundaries.
+    """
+    words = []
+    with tempfile.TemporaryDirectory(prefix='clipforge-openai-') as folder:
+        for path, offset in prepare_parts(source, folder, max_bytes):
+            with open(path, 'rb') as audio:
+                result = client.audio.transcriptions.create(model='whisper-1', file=audio, response_format='verbose_json',
+                                                            timestamp_granularities=['word', 'segment'])
+            part = [dict(word=(_field(w, 'word') or '').strip(), start=round(_field(w, 'start') + offset, 3),
+                         end=round(_field(w, 'end') + offset, 3)) for w in _field(result, 'words') or []]
+            part = [w for w in part if w['word']]
+            i = 0
+            for segment in _field(result, 'segments') or []:
+                end = _field(segment, 'end') + offset
+                while i < len(part) and part[i]['end'] <= end + 0.05:
+                    i += 1
+                mark = (_field(segment, 'text') or '').strip()[-1:]
+                if i and mark in ('.', '!', '?') and not part[i - 1]['word'].endswith(('.', '!', '?')):
+                    part[i - 1]['word'] += mark
+            words += part
+    return words

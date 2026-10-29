@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_memory
 from . import kie_account
 from . import headline_writer
+from . import moment_picker
 import logging
 from contextlib import nullcontext
 from .server import load
@@ -251,6 +252,40 @@ def plan(words,observations=()):
             return data
         finally:studio_ai.shutdown()
 
+def openai_plan(words,observations,job):
+    """plan() with OpenAI choosing the moments; its reply is checked like the local model's."""
+    text=' '.join(w['word'] for w in words);rows=phrases(words)
+    if len({studio_ai.normal(row['text']) for row in rows})<3:raise ValueError('Not enough distinct dialogue for three grounded concepts. Use a longer spoken video.')
+    reply,usd=moment_picker.pick([dict(id=row['id'],text=row['text']) for row in rows],STYLES,HEADLINE_RULES,
+        [dict(time=round(o['time'],1),description=o['description'][:120]) for o in observations])
+    job.setdefault('cost_usd',{})['moments']=usd
+    picks=reply.get('concepts') or []
+    if len(picks)<3:raise ValueError('OpenAI returned fewer than three moments; results rejected')
+    by_id={row['id']:row for row in rows};quotes=set();headlines=set();from_openai=0
+    data=dict(topic=reply.get('topic') or '',concepts=[])
+    for c in picks[:3]:
+        source=by_id.get(c.get('phrase_id'))
+        if source is None or studio_ai.normal(source['text']) in quotes:raise ValueError('OpenAI picked an unknown or repeated moment; results rejected')
+        quotes.add(studio_ai.normal(source['text']))
+        proposed=' '.join((c.get('headline') or '').split())
+        title=choose_headline(proposed,source['text'],headlines,text)
+        from_openai+=title==proposed
+        data['concepts'].append(dict(evidence=source['text'],time=source['start'],end=source['end'],title=title,
+            rationale=c.get('rationale') or '',image_prompt=c.get('image_prompt') or ''))
+    name='OpenAI '+moment_picker.model()
+    data['headline_engine']=name if from_openai==3 else f'{name} ({from_openai} of 3; rest from quotes)'
+    return data
+
+def openai_speech_words(source,job):
+    """Word timestamps from OpenAI Whisper, billed per audio minute; [] for silent sources."""
+    from openai import OpenAI
+    from openai_audio import transcribe_words
+    from url_media import streams
+    if not any(s.get('codec_type')=='audio' for s in streams(source['source'])):return []
+    words=transcribe_words(OpenAI(timeout=600,max_retries=1),source['source'])
+    job.setdefault('cost_usd',{})['transcription']=round(source['duration']/60*moment_picker.WHISPER_USD_PER_MINUTE,4)
+    return words
+
 def visual_plan(observations):
     if not observations:raise ValueError('No usable dialogue or visual-model observations. No thumbnail subject was invented.')
     fields={key:{'type':'string'} for key in ('topic','title','rationale','image_prompt')}
@@ -304,8 +339,10 @@ def speech_words(source,job):
 
 def worker(job,source):
     try:
-        job.update(status='running',stage='Transcribing actual dialogue locally',warnings=[])
-        words=speech_words(source,job)
+        # With a key, OpenAI transcribes and picks moments; local models are the no-key path.
+        cloud=moment_picker.enabled()
+        job.update(status='running',stage='Transcribing dialogue with OpenAI' if cloud else 'Transcribing actual dialogue locally',warnings=[])
+        words=openai_speech_words(source,job) if cloud else speech_words(source,job)
         transcription.release_memory()
         folder=ROOT/job['id'];folder.mkdir()
         job['stage']='Extracting reference frames and detecting scene changes'
@@ -324,11 +361,15 @@ def worker(job,source):
         job['stage']='Describing actual sampled scenes locally'
         observations=thumbnail_vision.describe(samples)
         if not observations:job['warnings'].append('Visual subject model unavailable. Main topic and moments are based on dialogue only; no visual identities or emotions are inferred.')
-        job['stage']='Preparing three transcript-grounded concepts with local Qwen'
-        analysis=plan(words,observations)
-        # After the local model has released its memory.
-        job['stage']='Writing thumbnail headlines'
-        improve_headlines(analysis,' '.join(w['word'] for w in words) or ' '.join(o['description'] for o in observations))
+        if cloud and words:
+            job['stage']='Choosing three moments with OpenAI '+moment_picker.model()
+            analysis=openai_plan(words,observations,job)
+        else:
+            job['stage']='Preparing three transcript-grounded concepts with local Qwen'
+            analysis=plan(words,observations)
+            # After the local model has released its memory.
+            job['stage']='Writing thumbnail headlines'
+            improve_headlines(analysis,' '.join(w['word'] for w in words) or ' '.join(o['description'] for o in observations))
         for i,concept in enumerate(analysis['concepts']):
             t=min(source['duration']-.04,max(0,(concept['time']+concept['end'])/2))
             path=folder/f'reference_{i}.jpg'
@@ -338,7 +379,7 @@ def worker(job,source):
         for i,c in enumerate(analysis['concepts']):
             c.update(id=i,approach=['Editorial reveal','Curiosity / question','Character illustration concept'][i],reference=frames[i],image_url=None)
         job.update(status='completed',stage='Concepts ready',analysis=analysis,frames=frames,scene_changes=cuts,
-            engine='local '+studio_ai.MODEL.stem+' + faster-whisper + FFmpeg',observations=observations,
+            engine=('OpenAI whisper-1 + '+moment_picker.model() if cloud and words else 'local '+studio_ai.MODEL.stem+' + faster-whisper')+' + FFmpeg',observations=observations,
             subject_basis=('sampled visual descriptions and dialogue' if words else 'sampled visual descriptions; proposed headlines are not spoken dialogue') if observations else 'dialogue only',
             visual_analysis='Local AI describes sampled actual frames; descriptions require user review.' if observations else 'Scene detection and timed reference frames only; semantic visual analysis is unavailable.',provider=provider.status())
     except Exception as e:job.update(status='failed',stage='Stopped safely',error=str(e))
@@ -394,7 +435,7 @@ def register(app):
 
     @app.post('/thumbnail-ai/jobs',status_code=202)
     def create(body:Request):
-        if not speech_status()['ready'] or not studio_ai.status()['ready']:
+        if not moment_picker.enabled() and (not speech_status()['ready'] or not studio_ai.status()['ready']):
             raise HTTPException(503,'Thumbnail analysis needs the offline speech model/library and a compatible local text model/runtime. No automatic downloads or paid fallback are used.')
         try:source=studio._load_source(body.source_id,load)
         except Exception:raise HTTPException(404,'Uploaded source not found')
