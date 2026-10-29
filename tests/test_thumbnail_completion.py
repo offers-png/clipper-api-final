@@ -19,33 +19,56 @@ class ThumbnailTests(unittest.TestCase):
   self.assertAlmostEqual(rows[1]['start'],.9);self.assertAlmostEqual(rows[1]['end'],1.8)
  def test_concepts_receive_exact_source_time_and_end(self):
   phrases=thumb.phrases(self.words)
-  concepts=[dict(title=p['text'],evidence=p['text'],rationale='Fixture only',image_prompt='Fixture only') for p in reversed(phrases)]
+  concepts=[dict(quote=p['text'],headline=f'Real Sentence {i}',rationale='Fixture only',image_prompt='Fixture only') for i,p in enumerate(reversed(phrases))]
   replies=iter([{**c,'topic':'Fixture'} for c in concepts])
   def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(next(replies))}
   with patch.object(studio_ai,'_start'),patch.object(studio_ai,'shutdown'),patch.object(studio_ai,'_request',side_effect=request):
    result=thumb.plan(self.words)
   for c,p in zip(result['concepts'],reversed(phrases)):
    self.assertEqual((c['time'],c['end']),(p['start'],p['end']))
- def test_mid_sentence_titles_end_on_a_word_with_an_ellipsis(self):
-  self.assertEqual(thumb.headline('Then you saw their face and realized it was their'),'Then you saw their face and realized…')
-  self.assertEqual(thumb.headline('They told it to you.'),'They told it to you.')
-  long=thumb.headline('Remember when everyone in the entire neighborhood gathered outside to watch the fireworks.')
-  self.assertTrue(long.endswith('…') and len(long)<=61 and not long[:-1].endswith(' '),long)
-  self.assertIn(long[:-1],'Remember when everyone in the entire neighborhood gathered outside to watch the fireworks.')
- def test_cut_phrase_title_is_trimmed_but_evidence_stays_exact(self):
-  words=[dict(word=w,start=i*.3,end=(i+1)*.3) for i,w in enumerate(
-   'You were halfway through a great story. Then you saw their face and realized it was their story all along. They told it to you.'.split())]
+ SOURCE=('You were halfway through a great story. Then you saw their face and realized it was their story. They told it to you. '
+         'Why does this happen? Memory saves the story, but often loses the source. Your brain keeps the interesting details.')
+ def test_headlines_are_short_complete_title_case_and_tied_to_the_video(self):
+  for good in ["A Story That Wasn't Yours",'Why Do Stories Get Lost?','Who Told It?','Your Brain Drops The Source','AI Saves The Story']:
+   self.assertEqual(thumb.punchy(good,self.SOURCE),good)
+  bad={'cut-off sentence':'Then You Saw Their','cut-off with ellipsis':'Realized It Was Their…','one word':'Story',
+       'six words':'Why Do Our Stories Get Lost?','lowercase':'Why do stories get lost?','glued words':'Why Do Stories Stay Inyour?',
+       'glued lowercase':'The Hidden Source of Yourstory','glued capitals':'Why Stories Stay inMemory?',
+       'apostrophe run-on':"What Changes If Story'ssource?",'run-on word':'The Source Was Whencretsavedtoyou',
+       'all caps':'WHY DOES THIS HAPPEN?','unrelated filler':'A Moment of Truth','stock phrase':'A Moment When Memory Falls'}
+  for reason,text in bad.items():
+   with self.subTest(reason):self.assertIsNone(thumb.punchy(text,self.SOURCE))
+ def test_question_style_must_end_with_a_question_mark(self):
+  import re
+  pattern=thumb.headline_pattern('question / curiosity composition')
+  self.assertTrue(re.fullmatch(pattern,'Who Told It?'));self.assertFalse(re.fullmatch(pattern,'Who Told It'))
+  self.assertTrue(re.fullmatch(thumb.headline_pattern('editorial topic reveal'),'Memory Lies'))
+ def test_rejected_headline_is_retried_then_falls_back_to_the_quote(self):
+  used=set();tries=iter(['A Moment of Truth','Why Memory Lies'])
+  self.assertEqual(thumb.choose_headline('A Moment of Truth','Why does this happen?',used,self.SOURCE,retry=lambda n:next(tries)),'Why Memory Lies')
+  self.assertEqual(thumb.choose_headline('Why Memory Lies','Then you saw their face and realized it was their',used,self.SOURCE,retry=lambda n:'Bad'),
+                   'Then You Saw Their Face')
+  self.assertEqual(thumb.fallback_headline('You were halfway through a great story.'),'You Were Halfway')
+ def test_plan_uses_headlines_for_titles_and_keeps_exact_quotes_as_evidence(self):
+  words=[dict(word=w,start=i*.3,end=(i+1)*.3) for i,w in enumerate(self.SOURCE.split())]
   rows=thumb.phrases(words);cut=rows[1]['text']
   self.assertEqual(cut,'Then you saw their face and realized it was their')
-  replies=iter([dict(topic='Fixture',title=r['text'],rationale='Fixture',image_prompt='Fixture') for r in rows[:3]])
-  def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(next(replies))}
+  answers=[dict(quote=rows[0]['text'],headline='A Story That Wasn\'t Yours'),dict(quote=cut,headline='Then You Saw Their'),
+           dict(headline='Who Told It?'),dict(quote=rows[3]['text'],headline='Why Memory Lies')]
+  replies=iter([dict(topic='Fixture',rationale='Fixture',image_prompt='Fixture',**a) if 'quote' in a else a for a in answers])
+  seen=[]
+  def request(path,body=None):
+   if path=='/tokenize':return {'tokens':[1]}
+   seen.append(body);return {'content':json.dumps(next(replies))}
   with patch.object(studio_ai,'_start'),patch.object(studio_ai,'shutdown'),patch.object(studio_ai,'_request',side_effect=request):
-   concept=thumb.plan(words)['concepts'][1]
-  self.assertEqual(concept['title'],'Then you saw their face and realized…')
-  self.assertEqual(concept['evidence'],cut)
-  self.assertEqual((concept['time'],concept['end']),(rows[1]['start'],rows[1]['end']))
+   concepts=thumb.plan(words)['concepts']
+  self.assertEqual([c['title'] for c in concepts],["A Story That Wasn't Yours",'Who Told It?','Why Memory Lies'])
+  self.assertEqual(concepts[1]['evidence'],cut)  # cut-off headline retried; exact quote kept as evidence
+  self.assertEqual((concepts[1]['time'],concepts[1]['end']),(rows[1]['start'],rows[1]['end']))
+  self.assertEqual(seen[2]['json_schema']['properties']['headline']['pattern'],thumb.headline_pattern('question / curiosity composition'))
+  self.assertTrue(seen[1]['json_schema']['properties']['headline']['pattern'].endswith(r'\?$'))
  def test_ungrounded_evidence_never_defaults_to_zero(self):
-  c=dict(topic='Fixture',title='Invented speech.',rationale='fixture',image_prompt='fixture')
+  c=dict(topic='Fixture',quote='Invented speech.',headline='Invented Speech',rationale='fixture',image_prompt='fixture')
   def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(c)}
   with patch.object(studio_ai,'_start'),patch.object(studio_ai,'shutdown'),patch.object(studio_ai,'_request',side_effect=request):
    with self.assertRaisesRegex(ValueError,'unsupported'):thumb.plan(self.words)
@@ -91,10 +114,12 @@ class ThumbnailTests(unittest.TestCase):
    self.assertEqual(job['generation_status'],'failed');self.assertEqual(len(job['generated']),1)
  def test_silent_video_requires_actual_visual_observations(self):
   with self.assertRaisesRegex(ValueError,'No usable dialogue or visual'):thumb.plan([],[])
-  def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(dict(topic='Red flower',title='Red in focus',rationale='Fixture',image_prompt='Fixture'))}
+  titles=iter(['Red Flower In Focus','Why Red Flowers Win?','Leaves Hide This Flower'])
+  def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(dict(topic='Red flower',title=next(titles),rationale='Fixture',image_prompt='Fixture'))}
   with patch.object(studio_ai,'_start'),patch.object(studio_ai,'shutdown'),patch.object(studio_ai,'_request',side_effect=request):
    result=thumb.plan([],[dict(time=1.5,description='A red flower among green leaves')])
   self.assertEqual(len(result['concepts']),3)
+  self.assertEqual([c['title'] for c in result['concepts']],['Red Flower In Focus','Why Red Flowers Win?','Leaves Hide This Flower'])
   self.assertTrue(all(c['evidence_kind']=='visual' and c['time']==1.5 for c in result['concepts']))
  def test_small_container_profile_reduces_scratch_and_cache_not_context(self):
   with tempfile.TemporaryDirectory() as temp:
