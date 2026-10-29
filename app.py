@@ -1,12 +1,19 @@
 # app.py
 
-import os, json, shutil, asyncio, subprocess, tempfile
+import os, sys, json, shutil, asyncio, subprocess, tempfile
+
+# Windows consoles and redirected logs default to cp1252; emoji log lines in
+# this app must be escaped, not crash startup or requests.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="backslashreplace")
+
 from datetime import datetime
 from typing import Optional, List, Tuple
 from zipfile import ZipFile
 
 from fastapi import Response
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +27,8 @@ from url_media import download, audio_to_mp3, MediaError
 from clipforge_studios.flags import studios_enabled
 from billing_identity import billing_actor, checkout_reference
 from billing_state import VerificationError
+from owner_access import is_owner
+from rate_limit import RateLimiter
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
@@ -34,6 +43,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "transcriptions").strip()
 SUPABASE_TEXT_COL_PRIMARY = os.getenv("SUPABASE_TEXT_COL", "text").strip()
 SUPABASE_TEXT_COL_ALT = os.getenv("SUPABASE_TEXT_COL_ALT", "content").strip()
+
+# Default: 30 OpenAI-backed requests per user per 10 minutes.
+ai_limiter = RateLimiter(int(os.getenv("CLIPFORGE_AI_RATE_LIMIT", "30")),
+                         float(os.getenv("CLIPFORGE_AI_RATE_WINDOW_SECONDS", "600")))
+
+def ai_actor(request: Request) -> dict:
+    """Signed-in user, OpenAI configured, and within the per-user AI rate limit."""
+    actor = billing_actor(request)
+    if not OPENAI_API_KEY:
+        raise HTTPException(503, "AI features are not configured on this server (OPENAI_API_KEY is not set).")
+    retry = ai_limiter.hit(actor["id"])
+    if retry:
+        raise HTTPException(429, f"Too many AI requests. Try again in {retry} seconds.",
+                            headers={"Retry-After": str(retry)})
+    return actor
 
 def sb():
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -423,6 +447,7 @@ async def clip_multi(
  # ======================================
 @app.post("/transcribe_clip")
 async def transcribe_clip(request: Request):
+    ai_actor(request)
     form = await request.form()
     clip_url = form.get("clip_url", "")
 
@@ -476,10 +501,12 @@ async def transcribe_clip(request: Request):
 
 @app.post("/transcribe")
 async def transcribe_audio(
+    request: Request,
     file: UploadFile = File(None),
     url: str = Form(None),
-    user_id: str = Form(default="@ClippedBySal"),  # Added user_id parameter
 ):
+    # History is saved under the signed-in account, never a client-supplied id.
+    user_id = ai_actor(request)["email"]
     tmp = None
     src = None
     source_name = None
@@ -562,6 +589,7 @@ async def transcribe_audio(
 
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
+    ai_actor(request)
     body = await request.json()
     prompt = body.get("prompt", "")
     transcript = body.get("transcript", "")
@@ -590,7 +618,10 @@ async def ask_ai(request: Request):
 # Data Upload Route
 # -------------------------------
 @app.post("/data-upload")
-async def data_upload(file: UploadFile = File(...)):
+async def data_upload(request: Request, file: UploadFile = File(...)):
+    # Replaces the server-wide downloader cookies, so owner/admin only.
+    if not is_owner(billing_actor(request)):
+        raise HTTPException(403, "Admin access required")
     try:
         dest_path = "/tmp/cookies.txt"
         contents = await file.read()
@@ -640,6 +671,7 @@ def resolve_local_media_path(url: str):
 
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
+    ai_actor(request)
     form = await request.form()
 
     user_message = form.get("user_message", "")
@@ -681,17 +713,42 @@ async def ai_chat(request: Request):
     return {"ok": True, "reply": reply_text}
 
 @app.get("/history/{user_id}")
-async def get_history(user_id: str, limit: int = 10):
+async def get_history(user_id: str, request: Request, limit: int = 10):
+    # History rows are keyed by the account email (see clip_multi/transcribe).
+    email = billing_actor(request)["email"]
+    if user_id.casefold() != email.casefold():
+        raise HTTPException(403, "You can only view your own history")
     from db_history import get_db
     db = get_db()
     if not db:
         return JSONResponse({"ok": False, "error": "Database unavailable"}, 500)
-    res = db.table("history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    res = db.table("history").select("*").eq("user_id", email).order("created_at", desc=True).limit(limit).execute()
     return {"ok": True, "history": res.data or []}
+
+
+async def update_own_record(request: Request, record_id: str, fields: dict):
+    """Update a history row only when it belongs to the signed-in account."""
+    email = billing_actor(request)["email"]
+    from db_history import get_db
+
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    data = {key: value for key, value in fields.items() if value is not None}
+    if not data:
+        return {"ok": False, "message": "Nothing to update"}
+
+    await asyncio.sleep(0.5)
+    res = db.table("history").update(data).eq("id", record_id).eq("user_id", email).execute()
+    if not res.data:
+        raise HTTPException(404, "Record not found")
+    return {"ok": True, "updated": list(data.keys())}
 
 
 @app.post("/history/update")
 async def update_history(
+    request: Request,
     record_id: str = Form(...),
     hooks: Optional[str] = Form(None),
     hashtags: Optional[str] = Form(None),
@@ -699,37 +756,13 @@ async def update_history(
     final_url: Optional[str] = Form(None),
     titles: Optional[str] = Form(None),
 ):
-    from db_history import get_db
-    import asyncio
-    from fastapi import HTTPException
-
-    db = get_db()
-    if not db:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-    data = {}
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
-    if summary is not None:
-        data["summary"] = summary
-    if final_url is not None:
-        data["final_url"] = final_url
-    if titles is not None:
-        data["titles"] = titles
-
-    if not data:
-        return {"ok": False, "message": "Nothing to update"}
-
-    await asyncio.sleep(0.5)
-    db.table("history").update(data).eq("id", record_id).execute()
-
-    return {"ok": True, "updated": list(data.keys())}
+    return await update_own_record(request, record_id, dict(
+        hooks=hooks, hashtags=hashtags, summary=summary, final_url=final_url, titles=titles))
 
 
 @app.post("/save_ai_insights")
 async def save_ai_insights(
+    request: Request,
     record_id: str = Form(...),
     hooks: Optional[str] = Form(None),
     hashtags: Optional[str] = Form(None),
@@ -737,33 +770,8 @@ async def save_ai_insights(
     titles: Optional[str] = Form(None),
     final_url: Optional[str] = Form(None),
 ):
-    from db_history import get_db
-    from fastapi import HTTPException
-    import asyncio
-
-    db = get_db()
-    if not db:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-    data = {}
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
-    if summary is not None:
-        data["summary"] = summary
-    if titles is not None:
-        data["titles"] = titles
-    if final_url is not None:
-        data["final_url"] = final_url
-
-    if not data:
-        return {"ok": False, "message": "Nothing to update"}
-
-    await asyncio.sleep(0.5)
-
-    db.table("history").update(data).eq("id", record_id).execute()
-    return {"ok": True, "updated": list(data.keys())}
+    return await update_own_record(request, record_id, dict(
+        hooks=hooks, hashtags=hashtags, summary=summary, titles=titles, final_url=final_url))
 
 # Additive opt-in local Studios; disabled unless explicitly configured.
 if studios_enabled():

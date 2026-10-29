@@ -142,11 +142,12 @@ class MediaTests(unittest.TestCase):
             scope=dict(UploadFile=UploadFile, File=File, Form=Form, JSONResponse=JSONResponse,
                        os=os, asyncio=asyncio, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
                        audio_to_mp3=audio_to_mp3, MediaError=MediaError, client=client,
-                       insert_transcript=database, print=Mock())
+                       insert_transcript=database, print=Mock(), Request=object,
+                       ai_actor=Mock(return_value={'email':'offline-contract-user'}))
             exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),scope)
             response=asyncio.run(scope['transcribe_audio'](
                 file=UploadFile(BytesIO((self.root/filename).read_bytes()),filename=filename),
-                url=None,user_id='offline-contract-user'))
+                url=None,request=None))
             self.assertEqual(response.status_code,status,response.body)
             self.assertEqual(client.audio.transcriptions.create.called,calls_api)
             self.assertEqual(database.called,calls_api)

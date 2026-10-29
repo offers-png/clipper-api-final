@@ -26,10 +26,11 @@ class TransportTests(unittest.TestCase):
             started.set();release.wait(.5)
             raise MediaError('Simulated host deadline; no external request made')
         scope=dict(UploadFile=UploadFile,File=File,Form=Form,JSONResponse=JSONResponse,
-                   asyncio=asyncio,os=os,MediaError=MediaError,download_to_tmp=slow_download)
+                   asyncio=asyncio,os=os,MediaError=MediaError,download_to_tmp=slow_download,
+                   Request=object,ai_actor=lambda request:{'email':'fixture'})
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),scope)
         async def check():
-            task=asyncio.create_task(scope['transcribe_audio'](file=None,url='https://example.invalid/source.mp4',user_id='fixture'))
+            task=asyncio.create_task(scope['transcribe_audio'](file=None,url='https://example.invalid/source.mp4',request=None))
             try:
                 await asyncio.sleep(.02)
                 self.assertTrue(started.is_set());self.assertFalse(task.done())

@@ -79,6 +79,19 @@ def phrases(words):
             first=i+1
     return rows
 
+# Words that leave a headline hanging when a phrase is cut mid-sentence.
+DANGLING={'a','an','the','and','or','but','so','to','of','in','on','at','for','with','from','by','as','that','it',
+    'is','was','are','were','be','my','your','his','her','its','our','their','this','these','those'}
+
+def headline(text,limit=60):
+    """Display title for a phrase. Mid-sentence cuts end on a whole word plus an ellipsis;
+    the exact quote stays in evidence for grounding."""
+    words=text.split();complete=bool(re.search(r'[.!?]["\')]?$',text))
+    while len(words)>2 and len(' '.join(words))>limit:words.pop();complete=False
+    if complete:return ' '.join(words)
+    while len(words)>2 and re.sub(r"[^\w']",'',words[-1]).casefold() in DANGLING:words.pop()
+    return ' '.join(words).rstrip(',;:-–—')+'…'
+
 def plan(words,observations=()):
     text=' '.join(w['word'] for w in words)
     if not text:return visual_plan(observations)
@@ -129,7 +142,7 @@ def plan(words,observations=()):
                 titles.add(title)
                 source=next((row for row in rows if studio_ai.normal(row['text'])==studio_ai.normal(c['evidence'])),None)
                 if source is None:raise ValueError('AI evidence does not match a timestamped source phrase')
-                c.update(time=source['start'],end=source['end'])
+                c.update(time=source['start'],end=source['end'],title=headline(source['text']))
                 if not data['topic']:data['topic']=c.pop('topic')
                 else:c.pop('topic',None)
                 data['concepts'].append(c)

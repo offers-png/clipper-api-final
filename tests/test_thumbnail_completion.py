@@ -26,6 +26,24 @@ class ThumbnailTests(unittest.TestCase):
    result=thumb.plan(self.words)
   for c,p in zip(result['concepts'],reversed(phrases)):
    self.assertEqual((c['time'],c['end']),(p['start'],p['end']))
+ def test_mid_sentence_titles_end_on_a_word_with_an_ellipsis(self):
+  self.assertEqual(thumb.headline('Then you saw their face and realized it was their'),'Then you saw their face and realized…')
+  self.assertEqual(thumb.headline('They told it to you.'),'They told it to you.')
+  long=thumb.headline('Remember when everyone in the entire neighborhood gathered outside to watch the fireworks.')
+  self.assertTrue(long.endswith('…') and len(long)<=61 and not long[:-1].endswith(' '),long)
+  self.assertIn(long[:-1],'Remember when everyone in the entire neighborhood gathered outside to watch the fireworks.')
+ def test_cut_phrase_title_is_trimmed_but_evidence_stays_exact(self):
+  words=[dict(word=w,start=i*.3,end=(i+1)*.3) for i,w in enumerate(
+   'You were halfway through a great story. Then you saw their face and realized it was their story all along. They told it to you.'.split())]
+  rows=thumb.phrases(words);cut=rows[1]['text']
+  self.assertEqual(cut,'Then you saw their face and realized it was their')
+  replies=iter([dict(topic='Fixture',title=r['text'],rationale='Fixture',image_prompt='Fixture') for r in rows[:3]])
+  def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(next(replies))}
+  with patch.object(studio_ai,'_start'),patch.object(studio_ai,'shutdown'),patch.object(studio_ai,'_request',side_effect=request):
+   concept=thumb.plan(words)['concepts'][1]
+  self.assertEqual(concept['title'],'Then you saw their face and realized…')
+  self.assertEqual(concept['evidence'],cut)
+  self.assertEqual((concept['time'],concept['end']),(rows[1]['start'],rows[1]['end']))
  def test_ungrounded_evidence_never_defaults_to_zero(self):
   c=dict(topic='Fixture',title='Invented speech.',rationale='fixture',image_prompt='fixture')
   def request(path,body=None):return {'tokens':[1]} if path=='/tokenize' else {'content':json.dumps(c)}
