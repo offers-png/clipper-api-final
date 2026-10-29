@@ -131,6 +131,7 @@ class MediaTests(unittest.TestCase):
         self.check_transcribe_route('silent.mp4', 422, False)
 
     def check_transcribe_route(self, filename, status, calls_api):
+        import app as backend
         source = Path(__file__).resolve().parents[1]/'app.py'
         tree = ast.parse(source.read_text(encoding='utf-8'))
         function = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name=='transcribe_audio')
@@ -143,7 +144,11 @@ class MediaTests(unittest.TestCase):
                        os=os, asyncio=asyncio, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
                        audio_to_mp3=audio_to_mp3, MediaError=MediaError, client=client,
                        insert_transcript=database, print=Mock(), Request=object,
-                       ai_actor=Mock(return_value={'email':'offline-contract-user'}))
+                       ai_actor=Mock(return_value={'email':'offline-contract-user'}),
+                       save_upload=backend.save_upload, own_media_file=backend.own_media_file,
+                       check_transcribe_url=backend.check_transcribe_url, check_media_limits=backend.check_media_limits,
+                       UnsupportedSource=backend.UnsupportedSource, MediaTooLarge=backend.MediaTooLarge,
+                       TRANSCRIBE_MAX_BYTES=backend.TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS=backend.TRANSCRIBE_MAX_SECONDS)
             exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),scope)
             response=asyncio.run(scope['transcribe_audio'](
                 file=UploadFile(BytesIO((self.root/filename).read_bytes()),filename=filename),

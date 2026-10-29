@@ -98,7 +98,7 @@ class EndpointAuthTests(unittest.TestCase):
             openai = MagicMock()
             openai.audio.transcriptions.create.return_value = 'hello world'
             with patch.object(backend, 'billing_actor', signed_in), patch.object(backend, 'client', openai), \
-                 patch.object(backend, 'audio_to_mp3', return_value=mp3), \
+                 patch.object(backend, 'audio_to_mp3', return_value=mp3), patch.object(backend, 'check_media_limits'), \
                  patch.object(backend, 'insert_transcript', return_value='r9') as insert:
                 response = self.client.post('/transcribe', headers=as_user('alice'),
                                             data={'user_id': BOB['email']}, files={'file': ('a.mp4', b'video')})

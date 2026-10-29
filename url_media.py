@@ -2,11 +2,13 @@
 
 Never loads browser cookies or emits downloader diagnostics containing private URLs.
 """
+import ipaddress
 import json
 import logging
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -19,8 +21,67 @@ PLATFORMS = ('youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com',
              'facebook.com', 'x.com', 'twitter.com', 'soundcloud.com', 'vimeo.com')
 
 
+# /transcribe accepts uploads plus links from these hosts only.
+TRANSCRIBE_PLATFORMS = ('youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com')
+UNSUPPORTED_LINK = 'Only YouTube, TikTok and Instagram links are supported. For anything else, upload the video file.'
+
+
 class MediaError(RuntimeError):
     pass
+
+
+class UnsupportedSource(MediaError):
+    pass
+
+
+class MediaTooLarge(MediaError):
+    pass
+
+
+def size_message(max_bytes):
+    return f'Videos over {max_bytes // (1024 * 1024)} MB are not supported. Trim or compress the video and try again.'
+
+
+def length_message(max_seconds):
+    return f'Videos longer than {max_seconds / 60:g} minutes are not supported. Trim the video and try again.'
+
+
+def check_transcribe_url(url, resolve=None):
+    """Allow only the supported platforms, and only when they resolve to public addresses."""
+    parsed = urlparse((url or '').strip())
+    host = (parsed.hostname or '').lower().rstrip('.')
+    try:
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    except ValueError:
+        raise UnsupportedSource(UNSUPPORTED_LINK) from None
+    if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
+            or not any(host == domain or host.endswith('.' + domain) for domain in TRANSCRIBE_PLATFORMS)):
+        raise UnsupportedSource(UNSUPPORTED_LINK)
+    try:
+        addresses = {info[4][0].split('%')[0] for info in (resolve or socket.getaddrinfo)(host, port, proto=socket.IPPROTO_TCP)}
+    except (OSError, UnicodeError):
+        raise UnsupportedSource("That link's host could not be found. Check the link or upload the video file.") from None
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        # Python 3.11 reports IPv4-mapped IPv6 loopback/private addresses as global.
+        ip = getattr(ip, 'ipv4_mapped', None) or ip
+        if not ip.is_global:
+            raise UnsupportedSource('Links that point to private or internal network addresses are not allowed.')
+
+
+def check_media_limits(path, max_bytes, max_seconds):
+    if Path(path).stat().st_size > max_bytes:
+        raise MediaTooLarge(size_message(max_bytes))
+    try:
+        result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                                 '-of', 'json', str(path)], capture_output=True, text=True, timeout=30)
+        duration = float(json.loads(result.stdout)['format']['duration'])
+    except FileNotFoundError:
+        raise MediaError('FFprobe is not installed on this server.') from None
+    except (ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        raise MediaError('Could not read the video length. Upload a standard video file.') from None
+    if duration > max_seconds:
+        raise MediaTooLarge(length_message(max_seconds))
 
 
 def platform_url(url):
@@ -28,15 +89,28 @@ def platform_url(url):
     return any(host == domain or host.endswith('.' + domain) for domain in PLATFORMS)
 
 
-def platform_download(url, root):
+def platform_download(url, root, max_bytes=None, max_seconds=None):
+    # Optional limits skip oversized videos before downloading when the host reports
+    # size/length; callers still verify the downloaded file.
+    limits = []
+    if max_bytes:
+        limits += ['--max-filesize', str(max_bytes)]
+    if max_seconds:
+        limits += ['--match-filter', f'duration <=? {int(max_seconds)}']
     result = subprocess.run([
         sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
         '--no-progress', '--no-simulate', '--socket-timeout', '30',
         '--retries', '2', '--fragment-retries', '2',
-        '-f', 'bv*+ba/b', '--merge-output-format', 'mp4',
+        '-f', 'bv*+ba/b', '--merge-output-format', 'mp4', *limits,
         '-o', str(root / 'source.%(ext)s'), '--print', 'after_move:filepath',
         '--', url.strip(),
     ], capture_output=True, text=True, timeout=900)
+    skipped = ((result.stdout or '') + (result.stderr or '')).lower()
+    if not result.returncode and not result.stdout.strip():
+        if max_seconds and 'does not pass filter' in skipped:
+            raise MediaTooLarge(length_message(max_seconds))
+        if max_bytes and 'max-filesize' in skipped:
+            raise MediaTooLarge(size_message(max_bytes))
     if result.returncode:
         # Inspect diagnostic categories without exposing arbitrary stderr or URLs.
         error=(result.stderr or '').lower()
@@ -69,7 +143,7 @@ def streams(path):
         raise MediaError('Media inspection failed or timed out.') from None
 
 
-def download(url):
+def download(url, max_bytes=None, max_seconds=None):
     started=time.monotonic()
     parsed = urlparse(url.strip())
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
@@ -77,7 +151,7 @@ def download(url):
     root = Path(tempfile.mkdtemp(prefix='clipforge-url-'))
     try:
         if platform_url(url):
-            path = platform_download(url, root)
+            path = platform_download(url, root, max_bytes, max_seconds)
         else:
             path = root / 'source.media'
             redirected_platform = None

@@ -23,7 +23,7 @@ from db_history import insert_transcript
 from supabase import create_client, Client
 from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
-from url_media import download, audio_to_mp3, MediaError
+from url_media import download, audio_to_mp3, MediaError, MediaTooLarge, UnsupportedSource,     check_transcribe_url, check_media_limits, size_message
 from clipforge_studios.flags import studios_enabled
 from billing_identity import billing_actor, checkout_reference
 from billing_state import VerificationError
@@ -168,8 +168,34 @@ def abs_url(request: Request, path: Optional[str]) -> Optional[str]:
     base = PUBLIC_BASE or str(request.base_url).rstrip("/")
     return f"{base}{path}"
 
-def download_to_tmp(url: str) -> str:
-    return download(url)
+def download_to_tmp(url: str, max_bytes=None, max_seconds=None) -> str:
+    return download(url, max_bytes, max_seconds)
+
+# /transcribe limits (defaults: 500 MB, 30 minutes).
+TRANSCRIBE_MAX_BYTES = int(float(os.getenv("CLIPFORGE_TRANSCRIBE_MAX_MB", "500")) * 1024 * 1024)
+TRANSCRIBE_MAX_SECONDS = float(os.getenv("CLIPFORGE_TRANSCRIBE_MAX_MINUTES", "30")) * 60
+
+def own_media_file(url: str) -> Optional[str]:
+    """This server's /media/previews or /media/exports URL as an existing local file.
+    Resolved by file name only; never fetched over the network."""
+    from urllib.parse import urlparse
+    path = urlparse(url.strip()).path
+    for prefix, folder in (("/media/previews/", PREVIEW_DIR), ("/media/exports/", EXPORT_DIR)):
+        name = path[len(prefix):] if path.startswith(prefix) else ""
+        if name and name not in (".", "..") and name == os.path.basename(name):
+            candidate = os.path.join(folder, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+async def save_upload(file: UploadFile, dest: str, max_bytes: int):
+    size = 0
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise MediaTooLarge(size_message(max_bytes))
+            f.write(chunk)
 
 def make_thumbnail(source_path: str, t_start: str, out_path: str):
     # Grab a frame ~0.25s after start to avoid black frames on cuts
@@ -509,14 +535,17 @@ async def transcribe_audio(
     user_id = ai_actor(request)["email"]
     tmp = None
     src = None
+    kept = None  # this server's own preview/export file; never deleted here
     source_name = None
     mp3_path = None
 
     try:
-        # 1) URL transcription
+        # 1) URL transcription: this server's clips, or YouTube/TikTok/Instagram
         if url:
-            tmp = await asyncio.to_thread(download_to_tmp, url)
-            src = tmp
+            kept = own_media_file(url)
+            if not kept:
+                await asyncio.to_thread(check_transcribe_url, url)
+                tmp = await asyncio.to_thread(download_to_tmp, url, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS)
             source_name = url.split("/")[-1] if "/" in url else url
 
         # 2) File upload transcription
@@ -524,8 +553,7 @@ async def transcribe_audio(
             filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
             src = os.path.join(UPLOAD_DIR, filename)
             source_name = file.filename
-            with open(src, "wb") as f:
-                f.write(await file.read())
+            await save_upload(file, src, TRANSCRIBE_MAX_BYTES)
 
         else:
             return JSONResponse(
@@ -533,8 +561,11 @@ async def transcribe_audio(
                 status_code=400,
             )
 
+        media = kept or tmp or src
+        await asyncio.to_thread(check_media_limits, media, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS)
+
         # Validate the actual audio stream and use a distinct output path.
-        mp3_path = await asyncio.to_thread(audio_to_mp3, src)
+        mp3_path = await asyncio.to_thread(audio_to_mp3, media)
 
         # Whisper
         with open(mp3_path, "rb") as a:
@@ -568,6 +599,12 @@ async def transcribe_audio(
     # Don't fail the whole request if DB save fails
 
         return JSONResponse({"ok": True, "text": text, "saved_to_db": bool(record_id), "record_id": record_id})
+
+    except UnsupportedSource as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    except MediaTooLarge as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
 
     except MediaError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
