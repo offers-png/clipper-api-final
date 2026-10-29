@@ -14,7 +14,8 @@ def is_owner(actor):
     except (ValueError,KeyError,TypeError,AttributeError):return False
 
 def development_access(actor):
-    if not is_owner(actor):return None
+    # dev_bypass is set only by dev_bypass.dev_actor for local loopback requests.
+    if not (is_owner(actor) or (isinstance(actor,dict) and actor.get('dev_bypass') is True)):return None
     return dict(allowed=True,plan='owner_development',reason='owner_development',
                 owner_development=True,unlimited=True,clips_remaining=None,
                 payment_verified=False,upgrade=False)

@@ -220,6 +220,8 @@ def health_get():
 async def billing_checkout(request: Request):
     actor = billing_actor(request)
     from owner_access import is_owner
+    if actor.get('dev_bypass'):
+        return JSONResponse({'ok':False, 'error':'Checkout is not available in local test mode. No payment was initiated.'},409)
     if is_owner(actor):return {'ok':True,'already_subscribed':True,'owner_development':True}
     try:
         url = create_checkout_session(actor['email'])
@@ -256,6 +258,14 @@ async def billing_check_access(request: Request):
     return {'ok':True, **result}
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/dev/bypass")
+def dev_bypass_status(request: Request):
+    """Lets a localhost frontend know local test mode is on; always false on Render."""
+    from dev_bypass import dev_actor
+    actor = dev_actor(request)
+    return {"enabled": bool(actor), "email": actor["email"] if actor else None}
+
 
 @app.head("/")
 def health_head():
