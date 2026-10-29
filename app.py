@@ -23,7 +23,8 @@ from db_history import insert_transcript
 from supabase import create_client, Client
 from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
-from url_media import download, audio_to_mp3, MediaError, MediaTooLarge, UnsupportedSource,     check_transcribe_url, check_media_limits, size_message
+from openai_audio import transcribe as transcribe_media
+from url_media import download, MediaError, MediaTooLarge, UnsupportedSource,     check_transcribe_url, check_media_limits, size_message
 from clipforge_studios.flags import studios_enabled
 from billing_identity import billing_actor, checkout_reference
 from billing_state import VerificationError
@@ -505,33 +506,13 @@ async def transcribe_clip(request: Request):
     else:
         return {"ok": False, "error": f"Clip not found on server: {filename}"}
 
-    # Convert to mp3
-    mp3_path = clip_path.replace(".mp4", ".mp3")
-    code, err = run([
-        "ffmpeg", "-y", "-i", clip_path,
-        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-        mp3_path
-    ], timeout=60)
-
-    if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": friendly_err(err, "Transcription")}
-
-    # Transcribe with Whisper
-    with open(mp3_path, "rb") as a:
-        tr = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=a,
-            response_format="text"
-        )
-
-    text = tr.strip() if isinstance(tr, str) else str(tr)
-
+    # Mono 32 kbps, split into parts if still over OpenAI's upload limit.
     try:
-        os.remove(mp3_path)
-    except:
-        pass
+        text, segments = await asyncio.to_thread(transcribe_media, client, clip_path)
+    except MediaError as e:
+        return {"ok": False, "error": str(e)}
 
-    return {"ok": True, "text": text}
+    return {"ok": True, "text": text, "segments": segments}
 
 
 
@@ -547,7 +528,6 @@ async def transcribe_audio(
     src = None
     kept = None  # this server's own preview/export file; never deleted here
     source_name = None
-    mp3_path = None
 
     try:
         # 1) URL transcription: this server's clips, or YouTube/TikTok/Instagram
@@ -574,18 +554,9 @@ async def transcribe_audio(
         media = kept or tmp or src
         await asyncio.to_thread(check_media_limits, media, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS)
 
-        # Validate the actual audio stream and use a distinct output path.
-        mp3_path = await asyncio.to_thread(audio_to_mp3, media)
-
-        # Whisper
-        with open(mp3_path, "rb") as a:
-            tr = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=a,
-                response_format="text",
-            )
-
-        text = tr.strip() if isinstance(tr, str) else str(tr)
+        # Mono 32 kbps, split into parts with shifted timestamps if still over
+        # OpenAI's upload limit. Rejects media without an audio track.
+        text, segments = await asyncio.to_thread(transcribe_media, client, media)
 
         # ✅ Save to database
         record_id = None
@@ -608,7 +579,8 @@ async def transcribe_audio(
 
     # Don't fail the whole request if DB save fails
 
-        return JSONResponse({"ok": True, "text": text, "saved_to_db": bool(record_id), "record_id": record_id})
+        return JSONResponse({"ok": True, "text": text, "segments": segments,
+                             "saved_to_db": bool(record_id), "record_id": record_id})
 
     except UnsupportedSource as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -626,7 +598,7 @@ async def transcribe_audio(
         )
 
     finally:
-        for p in [mp3_path, tmp, src]:
+        for p in [tmp, src]:
             try:
                 if p and os.path.exists(p):
                     os.remove(p)

@@ -142,7 +142,7 @@ class MediaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as uploads:
             scope=dict(UploadFile=UploadFile, File=File, Form=Form, JSONResponse=JSONResponse,
                        os=os, asyncio=asyncio, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
-                       audio_to_mp3=audio_to_mp3, MediaError=MediaError, client=client,
+                       transcribe_media=backend.transcribe_media, MediaError=MediaError, client=client,
                        insert_transcript=database, print=Mock(), Request=object,
                        ai_actor=Mock(return_value={'email':'offline-contract-user'}),
                        save_upload=backend.save_upload, own_media_file=backend.own_media_file,

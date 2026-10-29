@@ -1,6 +1,5 @@
 """Original app endpoints: sign-in, ownership, admin-only cookies, AI rate limits."""
 import os
-import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from fastapi import HTTPException
@@ -92,16 +91,11 @@ class EndpointAuthTests(unittest.TestCase):
                 owned.table.return_value.update.return_value.eq.return_value.eq.assert_called_once_with('user_id', ALICE['email'])
 
     def test_transcripts_are_saved_to_the_signed_in_account_not_the_form_user_id(self):
-        with tempfile.TemporaryDirectory() as folder:
-            mp3 = os.path.join(folder, 'audio.mp3')
-            open(mp3, 'wb').close()
-            openai = MagicMock()
-            openai.audio.transcriptions.create.return_value = 'hello world'
-            with patch.object(backend, 'billing_actor', signed_in), patch.object(backend, 'client', openai), \
-                 patch.object(backend, 'audio_to_mp3', return_value=mp3), patch.object(backend, 'check_media_limits'), \
-                 patch.object(backend, 'insert_transcript', return_value='r9') as insert:
-                response = self.client.post('/transcribe', headers=as_user('alice'),
-                                            data={'user_id': BOB['email']}, files={'file': ('a.mp4', b'video')})
+        with patch.object(backend, 'billing_actor', signed_in), patch.object(backend, 'check_media_limits'), \
+             patch.object(backend, 'transcribe_media', return_value=('hello world', [])), \
+             patch.object(backend, 'insert_transcript', return_value='r9') as insert:
+            response = self.client.post('/transcribe', headers=as_user('alice'),
+                                        data={'user_id': BOB['email']}, files={'file': ('a.mp4', b'video')})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['text'], 'hello world')
         self.assertEqual(insert.call_args.kwargs['user_id'], ALICE['email'])
