@@ -66,8 +66,8 @@ def metered(path):
 
 def analysis(path):
     """Transcription/analysis requests that cost OpenAI money (~$0.17 per new video) but make no clip:
-    their own daily allowance, never counted as clips."""
-    return path in ('/thumbnail-ai/jobs','/api/videos','/api/videos/url')
+    their own daily allowance, never counted as clips. A batch of AI thumbnails (up to 6 images) counts as one."""
+    return path in ('/thumbnail-ai/jobs','/api/videos','/api/videos/url') or bool(re.fullmatch(r'/thumbnail-ai/jobs/[a-f0-9]{32}/ai-thumbnails',path))
 
 def analysis_limit(plan):
     if plan=='trial':return int(os.getenv('CLIPFORGE_DAILY_ANALYSES_TRIAL','3'))

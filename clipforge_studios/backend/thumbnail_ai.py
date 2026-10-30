@@ -20,6 +20,7 @@ from . import headline_writer
 from . import moment_picker
 from . import openai_speech
 from . import thumbnail_design
+from . import ai_thumbnails
 import logging
 from contextlib import nullcontext
 from .server import load
@@ -77,6 +78,42 @@ class Spending(BaseModel):
 class Design(BaseModel):
     style:str=Field(pattern='^('+'|'.join(thumbnail_design.STYLES)+')$')
     concept:int|None=Field(default=None,ge=0,le=2)
+
+class AIThumbnails(BaseModel):
+    styles:list[str]=Field(min_length=1,max_length=ai_thumbnails.MAX_STYLES)
+    quality:str=Field(default='standard',pattern='^(fast|standard|best)$')
+    confirmed_total_usd:float=Field(ge=0,le=10,allow_inf_nan=False)
+
+AI_POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='ai-thumbnails')
+AI_BATCHES={}
+
+def ai_face_frame(job_id):
+    """The best face frame for the image reference: the local face picker when installed (None when the video
+    has no clear face), otherwise the first concept's video frame, which the brief writer checks for a person."""
+    if thumbnail_design.status()['ready']:
+        with DESIGN_LOCK:
+            job=get_job(job_id)
+            if not job.get('design_frame'):
+                try:source=studio._load_source(job['source_id'],load)
+                except Exception:return None
+                try:job['design_frame']=thumbnail_design.prepare(source['source'],source['duration'],ROOT/job_id)
+                except ValueError:return None  # no clear face toward the camera: draw a scene instead
+                (ROOT/(job_id+'.json')).write_text(json.dumps(job),encoding='utf-8')
+            return ROOT/job_id/'design-frame.png'
+    frame=ROOT/job_id/'reference_0.jpg'
+    return frame if frame.is_file() else None
+
+def ai_worker(job_id,batch):
+    from openai import OpenAI
+    try:
+        batch['stage']='Finding the best face frame in the video'
+        frame=ai_face_frame(job_id)
+        job=get_job(job_id)
+        ai_thumbnails.run_batch(batch,job['analysis'],frame,ROOT/job_id,OpenAI(timeout=300,max_retries=1),moment_picker.model())
+    except Exception as error:batch.update(status='failed',stage='Stopped',error=str(error)[:300])
+    finally:
+        job=get_job(job_id);job.setdefault('ai_batches',{})[batch['id']]=batch
+        (ROOT/(job_id+'.json')).write_text(json.dumps(job),encoding='utf-8')
 
 def image_binding(job):return dict(job_id=job['id'],concepts=[dict(id=c['id'],image_prompt=c['image_prompt']) for c in job['analysis']['concepts']])
 
@@ -550,6 +587,46 @@ def register(app):
         path=ROOT/job_id/f'design_{style}.jpg'
         if style not in thumbnail_design.STYLES or not path.is_file():raise HTTPException(404)
         return FileResponse(path,media_type='image/jpeg',filename=f'thumbnail-{style}.jpg')
+
+    @app.get('/thumbnail-ai/ai-styles')
+    def ai_styles():
+        """Styles with their bundled preview pictures, and the price of one image per quality."""
+        return dict(available=moment_picker.enabled(),reason=None if moment_picker.enabled() else 'Set OPENAI_API_KEY to generate AI thumbnails.',
+            model=ai_thumbnails.MODEL,size=ai_thumbnails.SIZE,max_styles=ai_thumbnails.MAX_STYLES,
+            styles=[dict(name=name,slug=ai_thumbnails.slug(name),preview=f'/studios/thumbnail-styles/{ai_thumbnails.slug(name)}.jpg') for name in ai_thumbnails.STYLES],
+            qualities=[dict(key=key,label=label,price_usd=round(ai_thumbnails.price(key),3)) for key,(label,_) in ai_thumbnails.QUALITIES.items()])
+
+    @app.post('/thumbnail-ai/jobs/{job_id}/ai-thumbnails',status_code=202)
+    def ai_generate(job_id:str,body:AIThumbnails):
+        """One AI thumbnail per selected style, after the user confirmed the total shown to them."""
+        job=get_job(job_id)
+        if job['status']!='completed':raise HTTPException(409,'Finish analysis first')
+        if not moment_picker.enabled():raise HTTPException(503,'Set OPENAI_API_KEY to generate AI thumbnails.')
+        styles=list(dict.fromkeys(body.styles))
+        unknown=[s for s in styles if s not in ai_thumbnails.STYLES]
+        if unknown:raise HTTPException(422,'Unknown style: '+', '.join(unknown))
+        total=round(len(styles)*round(ai_thumbnails.price(body.quality),3),3)
+        if abs(total-body.confirmed_total_usd)>.0015:raise HTTPException(409,f'The price is now ${total:.3f}. Review it and confirm again.')
+        if any(b['status']=='running' for b in AI_BATCHES.values()):raise HTTPException(409,'AI thumbnails are already being generated')
+        batch=dict(id=uuid.uuid4().hex,job_id=job_id,status='running',stage='Queued',styles=styles,quality=body.quality,
+            estimated_usd=total,model=ai_thumbnails.MODEL,items=[])
+        AI_BATCHES[batch['id']]=batch;AI_POOL.submit(ai_worker,job_id,batch)
+        return batch
+
+    @app.get('/thumbnail-ai/jobs/{job_id}/ai-thumbnails/{batch_id}')
+    def ai_status(job_id:str,batch_id:str):
+        job=get_job(job_id)
+        batch=AI_BATCHES.get(batch_id) or job.get('ai_batches',{}).get(batch_id)
+        if not batch or batch['job_id']!=job_id:raise HTTPException(404)
+        return batch
+
+    @app.get('/thumbnail-ai/jobs/{job_id}/ai-thumbnails/{batch_id}/{style}')
+    def ai_image(job_id:str,batch_id:str,style:str):
+        get_job(job_id)
+        if not re.fullmatch('[a-f0-9]{32}',batch_id) or style not in {ai_thumbnails.slug(n) for n in ai_thumbnails.STYLES}:raise HTTPException(404)
+        path=ROOT/job_id/f'ai_{batch_id}_{style}.jpg'
+        if not path.is_file():raise HTTPException(404)
+        return FileResponse(path,media_type='image/jpeg',filename=f'ai-thumbnail-{style}.jpg')
 
     @app.post('/thumbnail-ai/jobs/{job_id}/generate')
     def generate(job_id:str,body:Spending=Spending()):
