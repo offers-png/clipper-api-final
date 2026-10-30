@@ -30,7 +30,8 @@ class FakeChat:
 
 
 def reply(ids=(0, 2, 3), headlines=('Halfway Through A Story', 'Why Does This Happen?', 'Memory Saves The Story')):
-    return dict(topic='Memory', concepts=[dict(phrase_id=i, headline=h, rationale='r', image_prompt='p') for i, h in zip(ids, headlines)])
+    return dict(topic='How Memory Loses Sources', concepts=[dict(phrase_id=i, headline=h, key_word=h.split()[-1].strip('?'), rationale='r', image_prompt='p')
+                                                  for i, h in zip(ids, headlines)])
 
 
 class MomentPickerTests(unittest.TestCase):
@@ -42,7 +43,9 @@ class MomentPickerTests(unittest.TestCase):
         client = FakeChat(reply())
         phrases = [dict(id=0, text='a b'), dict(id=1, text='c d')]
         result, usd = moment_picker.pick(phrases, thumb.STYLES, thumb.HEADLINE_RULES, [dict(time=1, description='a desk')], client)
-        self.assertEqual(result['topic'], 'Memory')
+        self.assertEqual(result['topic'], 'How Memory Loses Sources')
+        self.assertIn("about the video's topic and promise", client.calls[0]['messages'][0]['content'])
+        self.assertIn('key_word', client.calls[0]['response_format']['json_schema']['schema']['properties']['concepts']['items']['required'])
         options = client.calls[0]
         self.assertEqual(options['model'], 'gpt-4o-mini')
         self.assertEqual(options['temperature'], 0.4)
@@ -73,15 +76,27 @@ class MomentPickerTests(unittest.TestCase):
         self.assertEqual([c['evidence'] for c in result['concepts']], [rows[i]['text'] for i in (0, 2, 3)])
         self.assertEqual([(c['time'], c['end']) for c in result['concepts']], [(rows[i]['start'], rows[i]['end']) for i in (0, 2, 3)])
         self.assertEqual([c['title'] for c in result['concepts']], ['Halfway Through A Story', 'Why Does This Happen?', 'Memory Saves The Story'])
+        self.assertEqual([c['key_word'] for c in result['concepts']], ['Story', 'Happen', 'Story'])
+        self.assertEqual(result['topic'], 'How Memory Loses Sources')
         self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini')
         self.assertEqual(job['cost_usd'], {'moments': 0.0012})
 
-    def test_rule_breaking_headline_falls_back_to_its_quote(self):
-        bad = reply(headlines=('A Moment of Truth', 'Why Does This Happen?', 'Memory Saves The Story'))
-        with patch.object(moment_picker, 'pick', return_value=(bad, None)):
+    def test_rule_breaking_or_long_headlines_fall_back_to_the_topic_not_the_quote(self):
+        bad = reply(headlines=('A Moment of Truth', 'Why Does This Keep Happening?', 'Memory Saves The Story'))
+        with patch.object(moment_picker, 'pick', return_value=(bad, None)) as pick:
             result = thumb.openai_plan(words(), [], {})
-        self.assertEqual(result['concepts'][0]['title'], 'You Were Halfway')  # dangling "through" dropped
-        self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini (2 of 3; rest from quotes)')
+        self.assertIn('2 to 4 words', pick.call_args.args[2])
+        self.assertEqual(result['concepts'][0]['title'], 'How Memory Loses Sources')
+        self.assertIsNone(result['concepts'][0]['key_word'])
+        self.assertEqual(result['concepts'][1]['title'], 'Why Does This Happen')  # topic already used; built from the quote
+        self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini (1 of 3; rest from the topic)')
+
+    def test_saved_transcript_is_reused_without_a_new_charge(self):
+        job, source = {}, dict(openai_words=words(), source='video.mp4', duration=60.0)
+        with patch('openai_audio.transcribe_words') as transcribe:
+            self.assertEqual(thumb.openai_speech_words(source, job), words())
+        transcribe.assert_not_called()
+        self.assertEqual(job['cost_usd'], {'transcription': 0})
 
     def test_unknown_repeated_or_missing_picks_are_rejected(self):
         for bad in (reply(ids=(0, 2, 99)), reply(ids=(0, 2, 2)), dict(topic='x', concepts=reply()['concepts'][:2])):

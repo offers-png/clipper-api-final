@@ -18,6 +18,7 @@ from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_
 from . import kie_account
 from . import headline_writer
 from . import moment_picker
+from . import thumbnail_design
 import logging
 from contextlib import nullcontext
 from .server import load
@@ -47,6 +48,7 @@ provider:ImageProvider=load_provider(UnavailableProvider(),kind='image')
 IMAGE_POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='thumbnail-provider')
 IMAGE_LOCK=threading.Lock()
 ANALYSIS_LOCK=threading.Lock()
+DESIGN_LOCK=threading.Lock()
 SPEECH_PYTHON=Path(os.getenv('CLIPFORGE_THUMBNAIL_SPEECH_PYTHON') or sys.executable).resolve()
 
 @lru_cache(maxsize=2)
@@ -70,6 +72,10 @@ class Request(BaseModel):
 class Spending(BaseModel):
     quote_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
     confirm_spend:bool=False
+
+class Design(BaseModel):
+    style:str=Field(pattern='^('+'|'.join(thumbnail_design.STYLES)+')$')
+    concept:int|None=Field(default=None,ge=0,le=2)
 
 def image_binding(job):return dict(job_id=job['id'],concepts=[dict(id=c['id'],image_prompt=c['image_prompt']) for c in job['analysis']['concepts']])
 
@@ -152,6 +158,16 @@ def write_headline(approach,quote,text,temperature):
     result=studio_ai._request('/completion',dict(prompt=prompt,temperature=temperature,n_predict=40,json_schema=schema,
                                                  cache_prompt=False,stop=['<|im_end|>']))
     return json.loads(result['content']).get('headline')
+
+def thumbnail_text(title,key=None):
+    """At most 4 words for a designed thumbnail, never ending on a dangling word, and the
+    index of the word to highlight: the given key word, else a number, else the longest key word."""
+    words=title.split()[:4]
+    while len(words)>2 and words[-1].casefold().strip('?!') in DANGLING:words.pop()
+    plain=[w.casefold().strip("?!.,") for w in words]
+    if key and key.casefold().strip("?!.,") in plain:return words,plain.index(key.casefold().strip("?!.,"))
+    rank=[(any(ch.isdigit() for ch in w),w not in SMALL_WORDS,len(w)) for w in plain]
+    return words,max(range(len(words)),key=rank.__getitem__)
 
 def fallback_headline(text):
     """Up to 5 words from the source itself, never ending on a dangling word."""
@@ -253,37 +269,46 @@ def plan(words,observations=()):
         finally:studio_ai.shutdown()
 
 def openai_plan(words,observations,job):
-    """plan() with OpenAI choosing the moments; its reply is checked like the local model's."""
+    """plan() with OpenAI choosing the moments and writing topic headlines (2-4 words, for designed
+    thumbnails); its reply is checked like the local model's. Rejected headlines fall back to the topic."""
     text=' '.join(w['word'] for w in words);rows=phrases(words)
     if len({studio_ai.normal(row['text']) for row in rows})<3:raise ValueError('Not enough distinct dialogue for three grounded concepts. Use a longer spoken video.')
-    reply,usd=moment_picker.pick([dict(id=row['id'],text=row['text']) for row in rows],STYLES,HEADLINE_RULES,
+    reply,usd=moment_picker.pick([dict(id=row['id'],text=row['text']) for row in rows],STYLES,HEADLINE_RULES.replace('2 to 5 words','2 to 4 words'),
         [dict(time=round(o['time'],1),description=o['description'][:120]) for o in observations])
     job.setdefault('cost_usd',{})['moments']=usd
     picks=reply.get('concepts') or []
     if len(picks)<3:raise ValueError('OpenAI returned fewer than three moments; results rejected')
     by_id={row['id']:row for row in rows};quotes=set();headlines=set();from_openai=0
-    data=dict(topic=reply.get('topic') or '',concepts=[])
+    topic=' '.join((reply.get('topic') or '').split()[:4])
+    data=dict(topic=topic,concepts=[])
     for c in picks[:3]:
         source=by_id.get(c.get('phrase_id'))
         if source is None or studio_ai.normal(source['text']) in quotes:raise ValueError('OpenAI picked an unknown or repeated moment; results rejected')
         quotes.add(studio_ai.normal(source['text']))
         proposed=' '.join((c.get('headline') or '').split())
-        title=choose_headline(proposed,source['text'],headlines,text)
+        if len(proposed.split())>4:proposed=''
+        try:title=choose_headline(proposed,topic,headlines,text)
+        except ValueError:title=choose_headline(None,source['text'],headlines,text)
         from_openai+=title==proposed
         data['concepts'].append(dict(evidence=source['text'],time=source['start'],end=source['end'],title=title,
-            rationale=c.get('rationale') or '',image_prompt=c.get('image_prompt') or ''))
+            key_word=c.get('key_word') if title==proposed else None,rationale=c.get('rationale') or '',image_prompt=c.get('image_prompt') or ''))
     name='OpenAI '+moment_picker.model()
-    data['headline_engine']=name if from_openai==3 else f'{name} ({from_openai} of 3; rest from quotes)'
+    data['headline_engine']=name if from_openai==3 else f'{name} ({from_openai} of 3; rest from the topic)'
     return data
 
 def openai_speech_words(source,job):
-    """Word timestamps from OpenAI Whisper, billed per audio minute; [] for silent sources."""
+    """Word timestamps from OpenAI Whisper, billed per audio minute; [] for silent sources.
+    Kept with the upload so analysing it again is not billed again."""
+    if 'openai_words' in source:
+        job.setdefault('cost_usd',{})['transcription']=0;return source['openai_words']
     from openai import OpenAI
     from openai_audio import transcribe_words
     from url_media import streams
     if not any(s.get('codec_type')=='audio' for s in streams(source['source'])):return []
     words=transcribe_words(OpenAI(timeout=600,max_retries=1),source['source'])
     job.setdefault('cost_usd',{})['transcription']=round(source['duration']/60*moment_picker.WHISPER_USD_PER_MINUTE,4)
+    source['openai_words']=words
+    if source.get('studio_source'):(studio.SOURCES/(source['id']+'.json')).write_text(json.dumps(source),encoding='utf-8')
     return words
 
 def visual_plan(observations):
@@ -431,7 +456,7 @@ def render_images(job):
 
 def register(app):
     @app.get('/thumbnail-ai/capabilities')
-    def capabilities():return dict(image_generation=provider.status(),text_analysis=studio_ai.status(),transcription=speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'],headlines=headline_writer.status())
+    def capabilities():return dict(image_generation=provider.status(),text_analysis=studio_ai.status(),transcription=speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'],headlines=headline_writer.status(),design=thumbnail_design.status())
 
     @app.post('/thumbnail-ai/jobs',status_code=202)
     def create(body:Request):
@@ -442,7 +467,7 @@ def register(app):
         # Share the existing serial processing queue with clipping jobs.
         with ANALYSIS_LOCK:
             if any(j['status'] in ('queued','running') for j in JOBS.values()):raise HTTPException(409,'A thumbnail analysis is already running')
-            job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued',warnings=[])
+            job=dict(id=uuid.uuid4().hex,source_id=body.source_id,status='queued',stage='Queued',warnings=[])
             JOBS[job['id']]=job
             studio._pool.submit(worker,job,source)
         return dict(job_id=job['id'])
@@ -456,6 +481,35 @@ def register(app):
         path=ROOT/job_id/f'reference_{index}.jpg'
         if index not in range(3) or not path.is_file():raise HTTPException(404)
         return FileResponse(path,media_type='image/jpeg')
+
+    @app.post('/thumbnail-ai/jobs/{job_id}/design')
+    def design(job_id:str,body:Design):
+        """Free, local designed thumbnail: best face frame, cutout, styled text. Concept defaults to the style's position."""
+        job=get_job(job_id)
+        if job['status']!='completed':raise HTTPException(409,'Finish analysis first')
+        ready=thumbnail_design.status()
+        if not ready['ready']:raise HTTPException(503,ready['reason'])
+        if not job.get('source_id'):raise HTTPException(409,'This analysis predates designed thumbnails. Analyze the video again.')
+        try:source=studio._load_source(job['source_id'],load)
+        except Exception:raise HTTPException(404,'Uploaded source not found')
+        index=list(thumbnail_design.STYLES).index(body.style) if body.concept is None else body.concept
+        concept=job['analysis']['concepts'][index];words,key=thumbnail_text(concept['title'],concept.get('key_word'))
+        with DESIGN_LOCK,lock:
+            job=get_job(job_id)  # sees a frame chosen by a request that held the lock first
+            try:
+                if not job.get('design_frame'):job['design_frame']=thumbnail_design.prepare(source['source'],source['duration'],ROOT/job_id)
+                thumbnail_design.render(ROOT/job_id,job['design_frame'],words,key,body.style).save(ROOT/job_id/f'design_{body.style}.jpg',quality=92)
+            except ValueError as error:raise HTTPException(422,str(error))
+            job.setdefault('designs',{})[body.style]=dict(url=f'/thumbnail-ai/jobs/{job_id}/design/{body.style}',title=' '.join(words),concept=index)
+            (ROOT/(job_id+'.json')).write_text(json.dumps(job),encoding='utf-8')
+        return dict(style=body.style,frame=job['design_frame'],**job['designs'][body.style])
+
+    @app.get('/thumbnail-ai/jobs/{job_id}/design/{style}')
+    def designed(job_id:str,style:str):
+        get_job(job_id)
+        path=ROOT/job_id/f'design_{style}.jpg'
+        if style not in thumbnail_design.STYLES or not path.is_file():raise HTTPException(404)
+        return FileResponse(path,media_type='image/jpeg',filename=f'thumbnail-{style}.jpg')
 
     @app.post('/thumbnail-ai/jobs/{job_id}/generate')
     def generate(job_id:str,body:Spending=Spending()):
