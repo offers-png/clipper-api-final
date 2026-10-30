@@ -18,6 +18,7 @@ from . import studio, studio_ai, media, transcription, thumbnail_vision, studio_
 from . import kie_account
 from . import headline_writer
 from . import moment_picker
+from . import openai_speech
 from . import thumbnail_design
 import logging
 from contextlib import nullcontext
@@ -298,17 +299,10 @@ def openai_plan(words,observations,job):
 
 def openai_speech_words(source,job):
     """Word timestamps from OpenAI Whisper, billed per audio minute; [] for silent sources.
-    Kept with the upload so analysing it again is not billed again."""
-    if 'openai_words' in source:
-        job.setdefault('cost_usd',{})['transcription']=0;return source['openai_words']
-    from openai import OpenAI
-    from openai_audio import transcribe_words
-    from url_media import streams
-    if not any(s.get('codec_type')=='audio' for s in streams(source['source'])):return []
-    words=transcribe_words(OpenAI(timeout=600,max_retries=1),source['source'])
-    job.setdefault('cost_usd',{})['transcription']=round(source['duration']/60*moment_picker.WHISPER_USD_PER_MINUTE,4)
-    source['openai_words']=words
-    if source.get('studio_source'):(studio.SOURCES/(source['id']+'.json')).write_text(json.dumps(source),encoding='utf-8')
+    Kept with the upload so analysing it again, or in another tool, is not billed again."""
+    words,usd=openai_speech.source_words(source)
+    job.setdefault('cost_usd',{})['transcription']=usd
+    if usd and source.get('studio_source'):(studio.SOURCES/(source['id']+'.json')).write_text(json.dumps(source),encoding='utf-8')
     return words
 
 def visual_plan(observations):
@@ -456,7 +450,13 @@ def render_images(job):
 
 def register(app):
     @app.get('/thumbnail-ai/capabilities')
-    def capabilities():return dict(image_generation=provider.status(),text_analysis=studio_ai.status(),transcription=speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'],headlines=headline_writer.status(),design=thumbnail_design.status())
+    def capabilities():
+        cloud=moment_picker.enabled()
+        return dict(image_generation=provider.status(),
+        text_analysis=dict(studio_ai.status(),ready=True,engine='OpenAI '+moment_picker.model()) if cloud else studio_ai.status(),
+        transcription=dict(speech_status(),ready=True,engine='OpenAI '+openai_speech.MODEL) if cloud else speech_status(),vision=thumbnail_vision.status(),semantic_vision=thumbnail_vision.status()['ready'],design=thumbnail_design.status(),
+        # With a key, OpenAI transcribes and picks moments and headlines (moment_picker), not headline_writer.
+        headlines=dict(provider='openai',model=moment_picker.model(),sends='the audio and transcript') if cloud else headline_writer.status())
 
     @app.post('/thumbnail-ai/jobs',status_code=202)
     def create(body:Request):

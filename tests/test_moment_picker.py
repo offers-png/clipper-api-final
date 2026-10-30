@@ -128,6 +128,18 @@ class TranscribeWordsTests(unittest.TestCase):
         self.assertEqual(result[-1], dict(word='Bye!', start=60.0, end=60.3))
         self.assertEqual(calls[0]['timestamp_granularities'], ['word', 'segment'])
 
+    def test_sentences_ending_mid_segment_keep_their_marks(self):
+        words = [dict(word=w, start=i, end=i + .5) for i, w in enumerate(
+            ['a', 'line', 'of', 'code', 'AI', 'agents', 'broke', "you'll", 'see', 'Why', 'not'])]
+        segments = [dict(text=' a line of code. AI agents broke,'), dict(text=" you'll see! Why not?\"")]
+        openai_audio.add_sentence_marks(words, segments)
+        self.assertEqual(' '.join(w['word'] for w in words), "a line of code. AI agents broke you'll see! Why not?")
+
+    def test_words_missing_from_the_text_do_not_shift_the_marks(self):
+        words = [dict(word=w, start=0, end=1) for w in ['so', 'um', 'it', 'works', 'Great']]
+        openai_audio.add_sentence_marks(words, [dict(text='so it works. Great.')])
+        self.assertEqual([w['word'] for w in words], ['so', 'um', 'it', 'works.', 'Great.'])
+
 
 if __name__ == '__main__':
     unittest.main()

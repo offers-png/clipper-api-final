@@ -6,6 +6,7 @@ and segment timestamps are shifted by each part's start time.
 """
 import json
 import math
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -88,12 +89,31 @@ def transcribe(client, source, max_bytes=OPENAI_MAX_BYTES):
     return ' '.join(t for t in texts if t), segments
 
 
-def transcribe_words(client, source, max_bytes=OPENAI_MAX_BYTES):
-    """[{word, start, end}] for the whole source; times are in source seconds.
+def _plain(text):
+    return re.sub(r"[^\w']", '', text.casefold())
 
-    Whisper's word list has no punctuation, so each segment's closing . ! or ?
-    is added to its last word to keep sentence boundaries.
+
+def add_sentence_marks(words, segments):
+    """Copy . ! ? from the segment text onto Whisper's unpunctuated words.
+
+    Segments can end sentences mid-way ("...of code. AI agents..."), so words are
+    matched to the text's words in order, looking a few words ahead to skip extras.
     """
+    tokens = [t for s in segments for t in (_field(s, 'text') or '').split()]
+    j = 0
+    for word in words:
+        key = _plain(word['word'])
+        for k in range(j, min(j + 4, len(tokens))):
+            if _plain(tokens[k]) == key:
+                mark = tokens[k].rstrip('"\'”’)')[-1:]
+                if mark in ('.', '!', '?') and not word['word'].endswith(('.', '!', '?')):
+                    word['word'] += mark
+                j = k + 1
+                break
+
+
+def transcribe_words(client, source, max_bytes=OPENAI_MAX_BYTES):
+    """[{word, start, end}] for the whole source, with sentence punctuation; times are in source seconds."""
     words = []
     with tempfile.TemporaryDirectory(prefix='clipforge-openai-') as folder:
         for path, offset in prepare_parts(source, folder, max_bytes):
@@ -103,13 +123,6 @@ def transcribe_words(client, source, max_bytes=OPENAI_MAX_BYTES):
             part = [dict(word=(_field(w, 'word') or '').strip(), start=round(_field(w, 'start') + offset, 3),
                          end=round(_field(w, 'end') + offset, 3)) for w in _field(result, 'words') or []]
             part = [w for w in part if w['word']]
-            i = 0
-            for segment in _field(result, 'segments') or []:
-                end = _field(segment, 'end') + offset
-                while i < len(part) and part[i]['end'] <= end + 0.05:
-                    i += 1
-                mark = (_field(segment, 'text') or '').strip()[-1:]
-                if i and mark in ('.', '!', '?') and not part[i - 1]['word'].endswith(('.', '!', '?')):
-                    part[i - 1]['word'] += mark
+            add_sentence_marks(part, _field(result, 'segments') or [])
             words += part
     return words

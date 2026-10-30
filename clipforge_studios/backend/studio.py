@@ -14,7 +14,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Literal
-from . import media, studio_ai, studio_render
+from . import media, studio_ai, studio_render, openai_speech, openai_analysis
 from .transcription import transcribe
 
 ROOT=Path(__file__).parent
@@ -102,7 +102,16 @@ def _load_source(source_id,existing_loader):
 
 
 def _words(data,job):
-    if data.get('words') and data.get('alignment_version')==3:return data['words']
+    if data.get('words') and data.get('alignment_version')==3:
+        job['transcription_engine']='faster-whisper';return data['words']
+    if openai_speech.enabled():
+        update(job,stage='Transcribing audio with OpenAI',progress=.05)
+        words,usd=openai_speech.source_words(data)
+        job.setdefault('cost_usd',{})['transcription']=usd;job['transcription_engine']='OpenAI '+openai_speech.MODEL
+        if usd and data.get('studio_source'):(SOURCES/(data['id']+'.json')).write_text(json.dumps(data),encoding='utf-8')
+        if not words:job['warnings'].append('No usable audio stream: no subtitles or speech-based analysis were generated.')
+        return words
+    job['transcription_engine']='faster-whisper'
     update(job,stage='Transcribing actual audio locally',progress=.05)
     audio=Path(media.TMP_DIR)/(job['id']+'.wav')
     try:
@@ -125,8 +134,16 @@ def _worker(job,body,data):
         update(job,status='running',stage='Inspecting source',progress=.02)
         opts=body.enhancements
         needs_ai=body.mode=='highlights' or opts.hooks or opts.context or opts.emoji
-        if needs_ai and not studio_ai.status()['ready']:
+        # With a key, OpenAI scores clips; the local model is the no-key path.
+        cloud=openai_speech.enabled()
+        if needs_ai and not cloud and not studio_ai.status()['ready']:
             raise ValueError('Local content-analysis model is not installed. Turn off AI hooks/context/emoji and use Full Video, or approve/install the local model. No mock analysis is substituted.')
+        def analyse(options,limit=None):
+            progress=lambda fraction:update(job,progress=.12+.06*fraction)
+            if not cloud:return studio_ai.analyse(options,body.category,progress)
+            items,usd=openai_analysis.analyse(options,body.category,progress,limit)
+            job.setdefault('cost_usd',{})['analysis']=usd;return items
+        engine='OpenAI '+openai_analysis.model() if cloud else 'local AI'
         words=_words(data,job) if needs_ai or opts.subtitles or opts.animated else []
         analyses={}
         if body.mode=='full':
@@ -134,17 +151,15 @@ def _worker(job,body,data):
             for i,c in enumerate(clips):
                 c.update(id=i,text=' '.join(w['word'] for w in words if w['end']>c['start'] and w['start']<c['end']))
             if needs_ai:
-                update(job,stage='Generating grounded quotes with local AI',progress=.12)
-                for item in studio_ai.analyse([c for c in clips if c['text']],body.category,
-                    lambda fraction:update(job,progress=.12+.06*fraction)):analyses[item['id']]=item
+                update(job,stage=f'Generating grounded quotes with {engine}',progress=.12)
+                for item in analyse([c for c in clips if c['text']]):analyses[item['id']]=item
         else:
-            if not words:raise ValueError('No speech found. This local model analyses transcript content; it cannot infer silent visual moments.')
-            update(job,stage='Ranking real transcript content with local AI',progress=.12)
+            if not words:raise ValueError('No speech found. AI Highlights analyse transcript content; they cannot infer silent visual moments.')
+            update(job,stage=f'Ranking real transcript content with {engine}',progress=.12)
             options=candidate_ranges(words,body.duration)
             if not options:raise ValueError('No complete sentence ranges fit this duration. Choose another duration.')
             clips=[];seen=set()
-            for item in studio_ai.analyse(options,body.category,
-                lambda fraction:update(job,progress=.12+.06*fraction)):
+            for item in analyse(options,body.count+3):
                 if not item['suitable'] or item['score']<.65 or item['id'] in seen:continue
                 c=options[item['id']]
                 if any(c['start']<p['end'] and c['end']>p['start'] for p in clips):continue
@@ -152,7 +167,7 @@ def _worker(job,body,data):
                 if len(clips)==body.count:break
             if not clips:
                 update(job,status='completed',stage='No suitable moments',progress=1,
-                    message=f'Local AI found no sufficiently supported {studio_ai.CATEGORIES[body.category].lower()} in the transcript. No content was invented.',items=[],coverage=None)
+                    message=f'{engine} found no sufficiently supported {studio_ai.CATEGORIES[body.category].lower()} in the transcript. No content was invented.',items=[],coverage=None)
                 return
             if len(clips)<body.count:job['warnings'].append(f'Only {len(clips)} suitable, non-overlapping moments were found for {body.count} requested clips.')
         update(job,stage='Rendering clips locally',total=len(clips),progress=.2)
@@ -172,7 +187,7 @@ def _worker(job,body,data):
         update(job,stage='Packaging batch download',progress=.97)
         manifest=dict(mode=body.mode,source_duration=data['duration'],target_duration=body.duration,
             category=body.category if body.mode=='highlights' else None,items=items,
-            transcription_engine='faster-whisper' if words else None)
+            transcription_engine=job.get('transcription_engine') if words else None)
         (output/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
         with ZipFile(output/'clips.zip','w',ZIP_STORED) as archive:
             archive.write(output/'manifest.json','manifest.json')
@@ -197,7 +212,11 @@ def register(app,existing_loader):
         try:import cv2;vision=True
         except ImportError:vision=False
         from .transcription import status as speech_status
-        return dict(ai=studio_ai.status(),transcription=speech_status(),face_detection=vision,categories=studio_ai.CATEGORIES,
+        ai,speech=studio_ai.status(),speech_status()
+        if openai_speech.enabled():  # OpenAI does both when a key is set, so they are ready without local models
+            ai=dict(ai,ready=True,engine='OpenAI '+openai_analysis.model())
+            speech=dict(speech,ready=True,engine='OpenAI '+openai_speech.MODEL)
+        return dict(ai=ai,transcription=speech,face_detection=vision,categories=studio_ai.CATEGORIES,
             scene_transitions=True,emoji_font=Path('C:/Windows/Fonts/seguiemj.ttf').is_file())
 
     @app.post('/studio/sources')
@@ -216,7 +235,8 @@ def register(app,existing_loader):
 
     @app.post('/studio/jobs',status_code=202)
     def generate(body:StudioRequest):
-        if (body.mode=='highlights' or body.enhancements.hooks or body.enhancements.context or body.enhancements.emoji) and not studio_ai.status()['ready']:
+        if (body.mode=='highlights' or body.enhancements.hooks or body.enhancements.context or body.enhancements.emoji) \
+                and not openai_speech.enabled() and not studio_ai.status()['ready']:
             raise HTTPException(503,'Local text-analysis model is not installed. AI Highlights/hooks/context/emoji require approval and a local model; Full Video works without it.')
         try:data=_load_source(body.source_id,existing_loader)
         except Exception:raise HTTPException(404,'Source not found. Upload it again.')

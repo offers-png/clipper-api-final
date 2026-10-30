@@ -11,7 +11,6 @@ Eye gaze is not modelled: "facing the camera" is judged from head pose.
 """
 from functools import lru_cache
 from pathlib import Path
-import numpy as np
 from . import media
 from .resource_paths import MODELS
 
@@ -66,6 +65,7 @@ def _faces(image):
 
 def facing(face):
     """1 when the head faces the camera, falling to 0 as it turns, tilts or nods (5-point head pose)."""
+    import numpy as np
     right_eye,left_eye,nose,mouth_right,mouth_left=map(np.array,face['landmarks'])
     eyes=(right_eye+left_eye)/2;mouth=(mouth_right+mouth_left)/2;span=np.linalg.norm(left_eye-right_eye)
     if span<1 or mouth[1]<=eyes[1]:return 0.
@@ -76,6 +76,7 @@ def facing(face):
 
 def expression(gray,face):
     """FER+ probabilities for the face crop."""
+    import numpy as np
     import cv2
     x,y,w,h=face['box'];side=max(w,h);cx,cy=x+w/2,y+h/2
     x0,y0=int(max(0,cx-side/2)),int(max(0,cy-side/2))
@@ -108,6 +109,7 @@ def _frame(video,time,path,width=None):
 
 def cutout(rgb):
     """Person alpha 0..1 from ISNet, preprocessed exactly as rembg does."""
+    import numpy as np
     import cv2
     session=_sessions()[1]
     pixels=cv2.resize(rgb,(1024,1024),interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
@@ -118,6 +120,7 @@ def cutout(rgb):
 
 def keep_person(alpha,face):
     """Only the cutout region that contains the chosen face."""
+    import numpy as np
     import cv2
     count,labels=cv2.connectedComponents((alpha>.5).astype(np.uint8))
     x,y,w,h=map(int,face['box'])
@@ -130,6 +133,7 @@ def keep_person(alpha,face):
 
 def prepare(video,duration,folder):
     """Choose the best face frame and save it with its cutout in folder. -> frame details."""
+    import numpy as np
     import cv2
     folder=Path(folder);samples=folder/'design-samples';samples.mkdir(parents=True,exist_ok=True)
     best=None
@@ -161,12 +165,14 @@ def _font(style,size):
     return ImageFont.load_default(size)
 
 def _gradient(top,bottom):
+    import numpy as np
     from PIL import Image
     t=np.linspace(0,1,H,dtype=np.float32)[:,None,None]
     rows=np.array(top,np.float32)*(1-t)+np.array(bottom,np.float32)*t
     return Image.fromarray(np.broadcast_to(rows,(H,W,3)).astype(np.uint8))
 
 def _vignette(image,strength):
+    import numpy as np
     from PIL import Image
     y,x=np.ogrid[-1:1:H*1j,-1:1:W*1j]
     shade=np.clip(1-strength*(x**2+y**2)/2,0,1)[...,None]
@@ -187,6 +193,7 @@ def _layout(style,words,width,height):
 
 def render(folder,frame,words,key,style):
     """1280x720 designed thumbnail (PIL image) for a frame from prepare()."""
+    import numpy as np
     import cv2
     from PIL import Image,ImageDraw,ImageEnhance,ImageFilter
     look=STYLES[style];folder=Path(folder)
