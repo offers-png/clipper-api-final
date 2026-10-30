@@ -89,7 +89,13 @@ def platform_url(url):
     return any(host == domain or host.endswith('.' + domain) for domain in PLATFORMS)
 
 
-def platform_download(url, root, max_bytes=None, max_seconds=None):
+# At most 1080p: the best format is often 4K, which takes long to fetch and
+# can pass the size limit mid-download (leaving nothing usable).
+VIDEO_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b'
+AUDIO_FORMAT = 'ba/b'
+
+
+def platform_download(url, root, max_bytes=None, max_seconds=None, audio_only=False):
     # Optional limits skip oversized videos before downloading when the host reports
     # size/length; callers still verify the downloaded file.
     limits = []
@@ -101,7 +107,7 @@ def platform_download(url, root, max_bytes=None, max_seconds=None):
         sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
         '--no-progress', '--no-simulate', '--socket-timeout', '30',
         '--retries', '2', '--fragment-retries', '2',
-        '-f', 'bv*+ba/b', '--merge-output-format', 'mp4', *limits,
+        '-f', AUDIO_FORMAT if audio_only else VIDEO_FORMAT, '--merge-output-format', 'mp4', *limits,
         '-o', str(root / 'source.%(ext)s'), '--print', 'after_move:filepath',
         '--', url.strip(),
     ], capture_output=True, text=True, timeout=900)
@@ -143,7 +149,8 @@ def streams(path):
         raise MediaError('Media inspection failed or timed out.') from None
 
 
-def download(url, max_bytes=None, max_seconds=None):
+def download(url, max_bytes=None, max_seconds=None, audio_only=False):
+    """audio_only fetches just the sound track from video sites (enough for transcription)."""
     started=time.monotonic()
     parsed = urlparse(url.strip())
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
@@ -151,7 +158,7 @@ def download(url, max_bytes=None, max_seconds=None):
     root = Path(tempfile.mkdtemp(prefix='clipforge-url-'))
     try:
         if platform_url(url):
-            path = platform_download(url, root, max_bytes, max_seconds)
+            path = platform_download(url, root, max_bytes, max_seconds, audio_only)
         else:
             path = root / 'source.media'
             redirected_platform = None
@@ -168,7 +175,7 @@ def download(url, max_bytes=None, max_seconds=None):
                         for chunk in response.iter_content(1024 * 1024):
                             output.write(chunk)
             if redirected_platform:
-                path = platform_download(redirected_platform, root)
+                path = platform_download(redirected_platform, root, audio_only=audio_only)
         if not any(s.get('codec_type') in ('audio', 'video') for s in streams(path)):
             raise MediaError('Downloaded file contains no audio or video streams.')
         # Return a standalone file: existing callers own and delete this path.

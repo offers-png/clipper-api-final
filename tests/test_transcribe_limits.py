@@ -123,7 +123,8 @@ class TranscribeRouteTests(unittest.TestCase):
             response = self.post(data={'url': 'https://www.tiktok.com/@a/video/1'})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['text'], 'route transcript')
-        download.assert_called_once_with('https://www.tiktok.com/@a/video/1', backend.TRANSCRIBE_MAX_BYTES, backend.TRANSCRIBE_MAX_SECONDS)
+        # Audio only: transcription never needs the video picture.
+        download.assert_called_once_with('https://www.tiktok.com/@a/video/1', backend.TRANSCRIBE_MAX_BYTES, backend.TRANSCRIBE_MAX_SECONDS, True)
         self.assertEqual((backend.TRANSCRIBE_MAX_BYTES, backend.TRANSCRIBE_MAX_SECONDS), (500 * 1024 * 1024, 1800))
 
     def test_oversized_upload_is_rejected_with_413(self):

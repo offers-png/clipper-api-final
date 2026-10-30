@@ -109,7 +109,7 @@ class MediaTests(unittest.TestCase):
         real_run = subprocess.run
         def fake_downloader(command, **kwargs):
             if command[1:3] == ['-m', 'yt_dlp']:
-                self.assertIn('bv*+ba/b', command)
+                self.assertIn('bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b', command)  # never 4K
                 self.assertIn('--ignore-config', command)
                 template = command[command.index('-o')+1]
                 destination = template.replace('%(ext)s', 'mkv')
@@ -122,6 +122,19 @@ class MediaTests(unittest.TestCase):
             self.assertTrue(source.endswith('.mkv'))
             self.assertTrue(any(s['codec_type']=='audio' for s in streams(source)))
         finally: Path(source).unlink()
+
+    def test_audio_only_downloads_just_the_sound(self):
+        real_run = subprocess.run; formats = []
+        def fake_downloader(command, **kwargs):
+            if command[1:3] == ['-m', 'yt_dlp']:
+                formats.append(command[command.index('-f')+1])
+                destination = command[command.index('-o')+1].replace('%(ext)s', 'mp4')
+                shutil.copy(self.root/'video.mp4', destination)
+                return subprocess.CompletedProcess(command, 0, destination+'\n', '')
+            return real_run(command, **kwargs)
+        with patch('url_media.subprocess.run', side_effect=fake_downloader):
+            Path(download('https://youtu.be/example', audio_only=True)).unlink()
+        self.assertEqual(formats, ['ba/b'])
 
     def test_original_transcribe_route_converts_and_cleans_files(self):
         # Execute the real route body without bootstrapping cloud integrations.

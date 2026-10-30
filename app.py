@@ -24,6 +24,7 @@ from supabase import create_client, Client
 from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
 from openai_audio import transcribe as transcribe_media
+import best_moments
 from url_media import download, MediaError, MediaTooLarge, UnsupportedSource,     check_transcribe_url, check_media_limits, size_message
 from clipforge_studios.flags import studios_enabled
 from billing_identity import billing_actor, checkout_reference
@@ -169,8 +170,8 @@ def abs_url(request: Request, path: Optional[str]) -> Optional[str]:
     base = PUBLIC_BASE or str(request.base_url).rstrip("/")
     return f"{base}{path}"
 
-def download_to_tmp(url: str, max_bytes=None, max_seconds=None) -> str:
-    return download(url, max_bytes, max_seconds)
+def download_to_tmp(url: str, max_bytes=None, max_seconds=None, audio_only=False) -> str:
+    return download(url, max_bytes, max_seconds, audio_only)
 
 # /transcribe limits (defaults: 500 MB, 30 minutes).
 TRANSCRIBE_MAX_BYTES = int(float(os.getenv("CLIPFORGE_TRANSCRIBE_MAX_MB", "500")) * 1024 * 1024)
@@ -535,7 +536,7 @@ async def transcribe_audio(
             kept = own_media_file(url)
             if not kept:
                 await asyncio.to_thread(check_transcribe_url, url)
-                tmp = await asyncio.to_thread(download_to_tmp, url, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS)
+                tmp = await asyncio.to_thread(download_to_tmp, url, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS, True)
             source_name = url.split("/")[-1] if "/" in url else url
 
         # 2) File upload transcription
@@ -604,6 +605,26 @@ async def transcribe_audio(
                     os.remove(p)
             except Exception:
                 pass
+
+
+@app.post("/auto_clip")
+async def auto_clip(request: Request):
+    """Best moments from /transcribe segments; start and end are real segment times."""
+    ai_actor(request)
+    body = await request.json()
+    rows = best_moments.clean(body.get("segments"))
+    if not rows:
+        return JSONResponse({"ok": False, "error": "Transcribe the full video first; best moments need its timestamps."},
+                            status_code=400)
+    try:
+        count = min(5, max(1, int(body.get("max_clips") or 3)))
+    except (TypeError, ValueError):
+        count = 3
+    try:
+        clips, usd = await asyncio.to_thread(best_moments.pick, client, rows, count)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Could not pick moments: {type(e).__name__}"}, status_code=502)
+    return {"ok": True, "clips": clips, "cost_usd": usd}
 
 
 @app.post("/ask-ai")
