@@ -51,7 +51,8 @@ class StyleTests(unittest.TestCase):
 
     def test_prompt_keeps_the_top_clear_and_asks_for_no_text(self):
         with_face = ai_thumbnails.prompt('Anime', dict(has_person=True, scene='A man talks about AI tools.'))
-        self.assertIn('reference photo', with_face);self.assertIn('top third', with_face);self.assertIn('Do not draw any words', with_face)
+        self.assertIn('reference photo', with_face);self.assertIn('Do not draw any words', with_face)
+        self.assertIn('fills the whole frame', with_face);self.assertIn('right side', with_face);self.assertNotIn('top third', with_face)
         scene = ai_thumbnails.prompt('Comic', dict(has_person=False, scene='Robots sorting email.'))
         self.assertNotIn('reference photo', scene);self.assertIn('Robots sorting email.', scene)
 
@@ -78,6 +79,7 @@ class GenerateTests(unittest.TestCase):
             ai_thumbnails.run_batch(batch, dict(topic='AI tools', concepts=[]), None, folder, client, 'gpt-4o-mini')
             self.assertEqual(batch['status'], 'completed')
             self.assertEqual([i['slug'] for i in batch['items']], ['anime', 'comic', 'sketch'])
+            self.assertEqual({i['title_side'] for i in batch['items']}, {'left'})  # no face in a plain picture: title on the left
             self.assertTrue(all((Path(folder) / f'ai_{"b" * 32}_{s}.jpg').is_file() for s in ('anime', 'comic', 'sketch')))
         self.assertEqual(len(images.calls), 3)
 

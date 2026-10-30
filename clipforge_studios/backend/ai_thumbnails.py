@@ -2,7 +2,8 @@
 
 The video's topic and transcript moments become an image brief; the best face frame from the video goes
 along as a reference so the person looks like themselves (no face: a scene from the topic). Output is
-1280x720 with the top third kept clear; the Thumbnail Creator's editor adds the title there, on top.
+1280x720, filling the whole frame: the person on one side and open background on the other, where the Thumbnail
+Creator's editor puts the title on top of the image.
 """
 import base64
 import io
@@ -94,8 +95,9 @@ def prompt(style, brief):
             + person +
             'Topic to show (use its objects and theme; when the style names a setting, such as underwater or a beer hall, '
             f'move everything there instead of this place): {brief["scene"]} '
-            'Composition: 16:9, eye-catching; keep the top third of the image plain, simple background with no faces or important '
-            'detail (a title banner will cover it later) and put the main subject, head included, large in the lower two-thirds. '
+            'Composition: 16:9 and eye-catching; the picture fills the whole frame edge to edge with no borders, frames, bands or '
+            'empty solid-color areas. Put the person (or main subject) large on the right side of the frame, and keep the left side '
+            'as open, uncluttered background from the same scene, so a big title can sit on top of the image there. '
             'Do not draw any words, letters, numbers, logos or watermarks. '
             f'Most important: {STYLES[style]}.')
 
@@ -146,6 +148,23 @@ def generate(style, brief, quality, reference, client):
     return base64.b64decode(response.data[0].b64_json), cost(getattr(response, 'usage', None))
 
 
+def title_side(path):
+    """'left' or 'right': the side away from the largest face (the prompt asks for the person on the right, so 'left'
+    unless the local face detector finds the face on the left)."""
+    try:
+        from . import thumbnail_design
+        if thumbnail_design.status()['ready']:
+            import cv2
+            image = cv2.imread(str(path))
+            faces = thumbnail_design._faces(image)
+            if faces:
+                x, _, w, _ = faces[0]['box']
+                return 'right' if x + w / 2 < image.shape[1] / 2 else 'left'
+    except Exception:
+        pass
+    return 'left'
+
+
 def save_jpeg(png, path):
     try:
         from PIL import Image
@@ -169,7 +188,8 @@ def run_batch(batch, analysis, frame_path, folder, client, model):
                 png, usd = generate(style, brief, batch['quality'], reference, client)
                 path = Path(folder) / f'ai_{batch["id"]}_{slug(style)}.jpg'
                 save_jpeg(png, path)
-                return dict(style=style, slug=slug(style), url=f'/thumbnail-ai/jobs/{batch["job_id"]}/ai-thumbnails/{batch["id"]}/{slug(style)}', cost_usd=usd)
+                return dict(style=style, slug=slug(style), url=f'/thumbnail-ai/jobs/{batch["job_id"]}/ai-thumbnails/{batch["id"]}/{slug(style)}',
+                            cost_usd=usd, title_side=title_side(path))
             except Exception as error:  # one style failing (e.g. a refused prompt) keeps the others
                 return dict(style=style, slug=slug(style), error=str(error)[:300])
         with ThreadPoolExecutor(PARALLEL) as pool:
