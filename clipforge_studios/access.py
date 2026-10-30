@@ -64,6 +64,15 @@ def resource_key(path):
 def metered(path):
     return path in ('/studio/jobs','/editor/jobs','/image-video/jobs','/video-generator/jobs','/local-original/manual') or bool(re.fullmatch(r'/api/videos/[a-f0-9]{32}/selection|/thumbnail-ai/jobs/[a-f0-9]{32}/generate',path))
 
+def analysis(path):
+    """Transcription/analysis requests that cost OpenAI money (~$0.17 per new video) but make no clip:
+    their own daily allowance, never counted as clips."""
+    return path in ('/thumbnail-ai/jobs','/api/videos','/api/videos/url')
+
+def analysis_limit(plan):
+    if plan=='trial':return int(os.getenv('CLIPFORGE_DAILY_ANALYSES_TRIAL','3'))
+    return int(os.getenv('CLIPFORGE_DAILY_ANALYSES_PAID','30'))
+
 class Access:
     def __init__(self,path,authenticate=verified_user,access=clip_access,record=record_clip,limit=trial_limit):
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -72,6 +81,9 @@ class Access:
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS owners (key TEXT PRIMARY KEY, user TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY,user TEXT,day TEXT,status TEXT,created REAL)')
+            # 'clip' or 'analysis'; rows from before the column existed are clips.
+            if 'kind' not in [row[1] for row in db.execute('PRAGMA table_info(usage)')]:
+                db.execute("ALTER TABLE usage ADD COLUMN kind TEXT DEFAULT 'clip'")
     @contextmanager
     def db(self):
         connection=sqlite3.connect(self.path,timeout=30)
@@ -107,33 +119,38 @@ class Access:
         if path=='/local-original/history':data['records']=[r for r in data.get('records',[]) if self.owns('entity:'+r.get('id',''),user)]
         if path=='/api/library/thumbnails':data['items']=[r for r in data.get('items',[]) if self.owns(resource_key(r.get('url','')) or 'missing',user)]
         return data
-    def reserve(self,actor):
+    def reserve(self,actor,kind='clip'):
         from owner_access import is_owner
-        if is_owner(actor):return dict(manager=self,actor=actor,id=None,submitted=False,owner_development=True)
+        if is_owner(actor):return dict(manager=self,actor=actor,id=None,submitted=False,owner_development=True,kind=kind)
         with self.lock:
             try:access=self.access(actor['email'])
             except Exception:raise HTTPException(503,'Clip access could not be verified') from None
             if access.get('reason')=='db_unavailable' or access.get('plan')=='unknown':raise HTTPException(503,'Subscription verification is unavailable. Retry; do not pay again.')
             if access.get('plan')=='payment_pending':raise HTTPException(409,'Your existing subscription needs attention. Do not start another subscription.')
             if access.get('plan') not in ('active','trial'):raise HTTPException(403,'Clip access is unavailable or an upgrade is required')
-            if not access.get('allowed'):raise HTTPException(403,'Upgrade required or daily clip limit reached')
+            # Analyses have their own allowance, so a used-up clip quota does not block them.
+            if kind=='clip' and not access.get('allowed'):raise HTTPException(403,'Upgrade required or daily clip limit reached')
             day=date.today().isoformat();rid=uuid.uuid4().hex
             with self.db() as db:
                 db.execute("UPDATE usage SET status='failed' WHERE status='pending' AND created<?",(time.time()-3600,))
-                pending=db.execute("SELECT count(*) FROM usage WHERE user=? AND day=? AND status='pending'",(actor['id'],day)).fetchone()[0]
-                used=db.execute("SELECT count(*) FROM usage WHERE user=? AND day=? AND status='success'",(actor['id'],day)).fetchone()[0]
-                if access['plan']=='trial':
+                count=lambda status:db.execute("SELECT count(*) FROM usage WHERE user=? AND day=? AND status=? AND coalesce(kind,'clip')=?",
+                                                (actor['id'],day,status,kind)).fetchone()[0]
+                pending,used=count('pending'),count('success')
+                if kind=='analysis':
+                    limit=analysis_limit(access['plan'])
+                    if pending+used>=limit:raise HTTPException(403,f'Daily video analysis limit reached ({limit} per day). Try again tomorrow.')
+                elif access['plan']=='trial':
                     # Same one-usage-per-batch semantics as Original /clip_multi.
                     remaining=min(int(access.get('clips_remaining') or 0),max(0,self.limit()-used))
                     if pending>=remaining:raise HTTPException(403,'Daily clip limit reached or processing jobs already reserved')
-                db.execute('INSERT INTO usage VALUES (?,?,?,?,?)',(rid,actor['id'],day,'pending',time.time()))
-            return dict(manager=self,actor=actor,id=rid,submitted=False)
+                db.execute('INSERT INTO usage (id,user,day,status,created,kind) VALUES (?,?,?,?,?,?)',(rid,actor['id'],day,'pending',time.time(),kind))
+            return dict(manager=self,actor=actor,id=rid,submitted=False,kind=kind)
     def finish(self,op,success):
         if op.get('owner_development'):return
         with self.lock:
             with self.db() as db:
                 changed=db.execute("UPDATE usage SET status=? WHERE id=? AND status='pending'",('success' if success else 'failed',op['id'])).rowcount
-            if changed and success:
+            if changed and success and op.get('kind','clip')=='clip':  # analyses are not clips in the billing ledger
                 try:self.record(op['actor']['email'])
                 except Exception:pass  # Local success ledger still prevents trial-quota bypass.
 
@@ -183,8 +200,8 @@ class StudioAccess(BaseHTTPMiddleware):
                 try:body=await request.json()
                 except Exception:raise HTTPException(400,'Invalid JSON body') from None
                 self.access.check_body(body,actor['id'])
-            if request.method=='POST' and metered(path):
-                op=await asyncio.to_thread(self.access.reserve,actor);context=operation.set(op)
+            if request.method=='POST' and (metered(path) or analysis(path)):
+                op=await asyncio.to_thread(self.access.reserve,actor,'analysis' if analysis(path) else 'clip');context=operation.set(op)
             response=await call_next(request)
             if response.status_code in (200,201,202) and 'application/json' in response.headers.get('content-type',''):
                 raw=b''.join([chunk async for chunk in response.body_iterator])
