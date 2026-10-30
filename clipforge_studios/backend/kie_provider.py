@@ -135,7 +135,11 @@ class KieClient:
             if on_progress and state in ('waiting','queuing','generating','success','fail'):on_progress(state)
             if state=='success':
                 if kie_account.active():kie_account.terminal('success')
-                try:urls=json.loads(data['resultJson'])['resultUrls']
+                try:
+                    result=json.loads(data['resultJson'])
+                    # Veo high-resolution output is documented in data.result_urls;
+                    # origin_urls is a lower-resolution version and is never substituted.
+                    urls=result['data']['result_urls'] if model=='veo-3-1' and isinstance(result.get('data'),dict) else result['resultUrls']
                 except Exception:raise KieError('KIE completed without valid media results') from None
                 if not isinstance(urls,list) or not urls:raise KieError('KIE completed without media results')
                 return safe_url(urls[0])
@@ -184,9 +188,16 @@ def reason(client):
 class KieVideoProvider:
     def __init__(self,client):self.client=client
     def status(self):
-        status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI · Wan 2.7',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
+        status=dict(available=self.client.available(),configured=bool(self.client._key),name='KIE AI Video',model=VIDEO_MODEL,reason=reason(self.client),durations=[5] if kie_budget.scoped() and not kie_account.active() else list(range(2,16)),ratios=['16:9','9:16','1:1'],paid=True)
         if kie_account.active():status.update(kie_account.status(bool(self.client._key)))
         status['models']=video_models.catalog()
+        if kie_budget.scoped() and not kie_account.active():
+            status['models']=[m for m in status['models'] if m['id']==VIDEO_MODEL]
+        else:status['durations']=sorted({d for m in status['models'] for d in m['durations']})
+        status['excluded_models']=video_models.CATALOG['excluded']
+        status['pricing_api_supported']=False
+        status['pricing_updated']=video_models.CATALOG['updated']
+        status['usd_per_credit']='0.005'
         return status
     def generate(self,image_path,request):
         if kie_budget.scoped() and not kie_account.active():
@@ -195,13 +206,11 @@ class KieVideoProvider:
     def _generate(self,image_path,request):
         self.client.require_approval()
         selected=video_models.resolve(request.model_dump())
-        model=selected['id'];newer=model.startswith('wan/2-7-')
+        model=selected['provider_model']
         prompt=video_models.effective_prompt(request.model_dump())
-        inputs=dict(prompt=prompt,duration=request.duration if newer else str(request.duration),resolution='720p')
-        inputs['prompt_extend' if newer else 'enable_prompt_expansion']=False
+        url=None
         if request.mode=='text':
             if not request.prompt.strip():raise KieError('Enter a text prompt')
-            inputs['ratio' if newer else 'aspect_ratio']=request.ratio
         else:
             from . import editor
             w,h=editor.SIZES[request.ratio]
@@ -209,7 +218,7 @@ class KieVideoProvider:
                 image=Path(temp)/'reference.png'
                 editor.run(['-i',str(Path(image_path).resolve()),'-frames:v','1','-vf',f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2',str(image)],temp)
                 url=self.client.upload(image)
-            inputs['first_frame_url' if newer else 'image_url']=url
+        inputs=video_models.payload(request.model_dump(),prompt,url)
         return self.client.download(self.client.task(model,inputs,on_progress=request._progress),'video')
 
 class KieImageProvider:

@@ -1,12 +1,19 @@
 # app.py
 
-import os, json, shutil, asyncio, subprocess, tempfile
+import os, sys, json, shutil, asyncio, subprocess, tempfile
+
+# Windows consoles and redirected logs default to cp1252; emoji log lines in
+# this app must be escaped, not crash startup or requests.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="backslashreplace")
+
 from datetime import datetime
 from typing import Optional, List, Tuple
 from zipfile import ZipFile
 
 from fastapi import Response
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,10 +23,14 @@ from db_history import insert_transcript
 from supabase import create_client, Client
 from stripe_billing import check_clip_access, record_clip_used, create_checkout_session, handle_webhook
 import requests
-from url_media import download, audio_to_mp3, MediaError
+from openai_audio import transcribe as transcribe_media
+import best_moments
+from url_media import download, MediaError, MediaTooLarge, UnsupportedSource,     check_transcribe_url, check_media_limits, size_message
 from clipforge_studios.flags import studios_enabled
 from billing_identity import billing_actor, checkout_reference
 from billing_state import VerificationError
+from owner_access import is_owner
+from rate_limit import RateLimiter
 
 APP_TITLE = "ClipForge AI Backend (Stable)"
 APP_VERSION = "3.1.0"
@@ -34,6 +45,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "transcriptions").strip()
 SUPABASE_TEXT_COL_PRIMARY = os.getenv("SUPABASE_TEXT_COL", "text").strip()
 SUPABASE_TEXT_COL_ALT = os.getenv("SUPABASE_TEXT_COL_ALT", "content").strip()
+
+# Default: 30 OpenAI-backed requests per user per 10 minutes.
+ai_limiter = RateLimiter(int(os.getenv("CLIPFORGE_AI_RATE_LIMIT", "30")),
+                         float(os.getenv("CLIPFORGE_AI_RATE_WINDOW_SECONDS", "600")))
+
+def ai_actor(request: Request) -> dict:
+    """Signed-in user, OpenAI configured, and within the per-user AI rate limit."""
+    actor = billing_actor(request)
+    if not OPENAI_API_KEY:
+        raise HTTPException(503, "AI features are not configured on this server (OPENAI_API_KEY is not set).")
+    retry = ai_limiter.hit(actor["id"])
+    if retry:
+        raise HTTPException(429, f"Too many AI requests. Try again in {retry} seconds.",
+                            headers={"Retry-After": str(retry)})
+    return actor
 
 def sb():
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -144,8 +170,34 @@ def abs_url(request: Request, path: Optional[str]) -> Optional[str]:
     base = PUBLIC_BASE or str(request.base_url).rstrip("/")
     return f"{base}{path}"
 
-def download_to_tmp(url: str) -> str:
-    return download(url)
+def download_to_tmp(url: str, max_bytes=None, max_seconds=None, audio_only=False) -> str:
+    return download(url, max_bytes, max_seconds, audio_only)
+
+# /transcribe limits (defaults: 500 MB, 30 minutes).
+TRANSCRIBE_MAX_BYTES = int(float(os.getenv("CLIPFORGE_TRANSCRIBE_MAX_MB", "500")) * 1024 * 1024)
+TRANSCRIBE_MAX_SECONDS = float(os.getenv("CLIPFORGE_TRANSCRIBE_MAX_MINUTES", "30")) * 60
+
+def own_media_file(url: str) -> Optional[str]:
+    """This server's /media/previews or /media/exports URL as an existing local file.
+    Resolved by file name only; never fetched over the network."""
+    from urllib.parse import urlparse
+    path = urlparse(url.strip()).path
+    for prefix, folder in (("/media/previews/", PREVIEW_DIR), ("/media/exports/", EXPORT_DIR)):
+        name = path[len(prefix):] if path.startswith(prefix) else ""
+        if name and name not in (".", "..") and name == os.path.basename(name):
+            candidate = os.path.join(folder, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+async def save_upload(file: UploadFile, dest: str, max_bytes: int):
+    size = 0
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise MediaTooLarge(size_message(max_bytes))
+            f.write(chunk)
 
 def make_thumbnail(source_path: str, t_start: str, out_path: str):
     # Grab a frame ~0.25s after start to avoid black frames on cuts
@@ -170,6 +222,8 @@ def health_get():
 async def billing_checkout(request: Request):
     actor = billing_actor(request)
     from owner_access import is_owner
+    if actor.get('dev_bypass'):
+        return JSONResponse({'ok':False, 'error':'Checkout is not available in local test mode. No payment was initiated.'},409)
     if is_owner(actor):return {'ok':True,'already_subscribed':True,'owner_development':True}
     try:
         url = create_checkout_session(actor['email'])
@@ -206,6 +260,14 @@ async def billing_check_access(request: Request):
     return {'ok':True, **result}
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/dev/bypass")
+def dev_bypass_status(request: Request):
+    """Lets a localhost frontend know local test mode is on; always false on Render."""
+    from dev_bypass import dev_actor
+    actor = dev_actor(request)
+    return {"enabled": bool(actor), "email": actor["email"] if actor else None}
+
 
 @app.head("/")
 def health_head():
@@ -423,6 +485,7 @@ async def clip_multi(
  # ======================================
 @app.post("/transcribe_clip")
 async def transcribe_clip(request: Request):
+    ai_actor(request)
     form = await request.form()
     clip_url = form.get("clip_url", "")
 
@@ -444,52 +507,36 @@ async def transcribe_clip(request: Request):
     else:
         return {"ok": False, "error": f"Clip not found on server: {filename}"}
 
-    # Convert to mp3
-    mp3_path = clip_path.replace(".mp4", ".mp3")
-    code, err = run([
-        "ffmpeg", "-y", "-i", clip_path,
-        "-vn", "-acodec", "libmp3lame", "-b:a", "192k",
-        mp3_path
-    ], timeout=60)
-
-    if code != 0 or not os.path.exists(mp3_path):
-        return {"ok": False, "error": friendly_err(err, "Transcription")}
-
-    # Transcribe with Whisper
-    with open(mp3_path, "rb") as a:
-        tr = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=a,
-            response_format="text"
-        )
-
-    text = tr.strip() if isinstance(tr, str) else str(tr)
-
+    # Mono 32 kbps, split into parts if still over OpenAI's upload limit.
     try:
-        os.remove(mp3_path)
-    except:
-        pass
+        text, segments = await asyncio.to_thread(transcribe_media, client, clip_path)
+    except MediaError as e:
+        return {"ok": False, "error": str(e)}
 
-    return {"ok": True, "text": text}
+    return {"ok": True, "text": text, "segments": segments}
 
 
 
 @app.post("/transcribe")
 async def transcribe_audio(
+    request: Request,
     file: UploadFile = File(None),
     url: str = Form(None),
-    user_id: str = Form(default="@ClippedBySal"),  # Added user_id parameter
 ):
+    # History is saved under the signed-in account, never a client-supplied id.
+    user_id = ai_actor(request)["email"]
     tmp = None
     src = None
+    kept = None  # this server's own preview/export file; never deleted here
     source_name = None
-    mp3_path = None
 
     try:
-        # 1) URL transcription
+        # 1) URL transcription: this server's clips, or YouTube/TikTok/Instagram
         if url:
-            tmp = await asyncio.to_thread(download_to_tmp, url)
-            src = tmp
+            kept = own_media_file(url)
+            if not kept:
+                await asyncio.to_thread(check_transcribe_url, url)
+                tmp = await asyncio.to_thread(download_to_tmp, url, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS, True)
             source_name = url.split("/")[-1] if "/" in url else url
 
         # 2) File upload transcription
@@ -497,8 +544,7 @@ async def transcribe_audio(
             filename = safe(file.filename or f"upload_{nowstamp()}.mp4")
             src = os.path.join(UPLOAD_DIR, filename)
             source_name = file.filename
-            with open(src, "wb") as f:
-                f.write(await file.read())
+            await save_upload(file, src, TRANSCRIBE_MAX_BYTES)
 
         else:
             return JSONResponse(
@@ -506,18 +552,12 @@ async def transcribe_audio(
                 status_code=400,
             )
 
-        # Validate the actual audio stream and use a distinct output path.
-        mp3_path = await asyncio.to_thread(audio_to_mp3, src)
+        media = kept or tmp or src
+        await asyncio.to_thread(check_media_limits, media, TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS)
 
-        # Whisper
-        with open(mp3_path, "rb") as a:
-            tr = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=a,
-                response_format="text",
-            )
-
-        text = tr.strip() if isinstance(tr, str) else str(tr)
+        # Mono 32 kbps, split into parts with shifted timestamps if still over
+        # OpenAI's upload limit. Rejects media without an audio track.
+        text, segments = await asyncio.to_thread(transcribe_media, client, media)
 
         # ✅ Save to database
         record_id = None
@@ -540,7 +580,14 @@ async def transcribe_audio(
 
     # Don't fail the whole request if DB save fails
 
-        return JSONResponse({"ok": True, "text": text, "saved_to_db": bool(record_id), "record_id": record_id})
+        return JSONResponse({"ok": True, "text": text, "segments": segments,
+                             "saved_to_db": bool(record_id), "record_id": record_id})
+
+    except UnsupportedSource as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    except MediaTooLarge as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
 
     except MediaError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
@@ -552,7 +599,7 @@ async def transcribe_audio(
         )
 
     finally:
-        for p in [mp3_path, tmp, src]:
+        for p in [tmp, src]:
             try:
                 if p and os.path.exists(p):
                     os.remove(p)
@@ -560,8 +607,29 @@ async def transcribe_audio(
                 pass
 
 
+@app.post("/auto_clip")
+async def auto_clip(request: Request):
+    """Best moments from /transcribe segments; start and end are real segment times."""
+    ai_actor(request)
+    body = await request.json()
+    rows = best_moments.clean(body.get("segments"))
+    if not rows:
+        return JSONResponse({"ok": False, "error": "Transcribe the full video first; best moments need its timestamps."},
+                            status_code=400)
+    try:
+        count = min(5, max(1, int(body.get("max_clips") or 3)))
+    except (TypeError, ValueError):
+        count = 3
+    try:
+        clips, usd = await asyncio.to_thread(best_moments.pick, client, rows, count)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Could not pick moments: {type(e).__name__}"}, status_code=502)
+    return {"ok": True, "clips": clips, "cost_usd": usd}
+
+
 @app.post("/ask-ai")
 async def ask_ai(request: Request):
+    ai_actor(request)
     body = await request.json()
     prompt = body.get("prompt", "")
     transcript = body.get("transcript", "")
@@ -590,7 +658,10 @@ async def ask_ai(request: Request):
 # Data Upload Route
 # -------------------------------
 @app.post("/data-upload")
-async def data_upload(file: UploadFile = File(...)):
+async def data_upload(request: Request, file: UploadFile = File(...)):
+    # Replaces the server-wide downloader cookies, so owner/admin only.
+    if not is_owner(billing_actor(request)):
+        raise HTTPException(403, "Admin access required")
     try:
         dest_path = "/tmp/cookies.txt"
         contents = await file.read()
@@ -640,6 +711,7 @@ def resolve_local_media_path(url: str):
 
 @app.post("/ai_chat")
 async def ai_chat(request: Request):
+    ai_actor(request)
     form = await request.form()
 
     user_message = form.get("user_message", "")
@@ -681,17 +753,42 @@ async def ai_chat(request: Request):
     return {"ok": True, "reply": reply_text}
 
 @app.get("/history/{user_id}")
-async def get_history(user_id: str, limit: int = 10):
+async def get_history(user_id: str, request: Request, limit: int = 10):
+    # History rows are keyed by the account email (see clip_multi/transcribe).
+    email = billing_actor(request)["email"]
+    if user_id.casefold() != email.casefold():
+        raise HTTPException(403, "You can only view your own history")
     from db_history import get_db
     db = get_db()
     if not db:
         return JSONResponse({"ok": False, "error": "Database unavailable"}, 500)
-    res = db.table("history").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    res = db.table("history").select("*").eq("user_id", email).order("created_at", desc=True).limit(limit).execute()
     return {"ok": True, "history": res.data or []}
+
+
+async def update_own_record(request: Request, record_id: str, fields: dict):
+    """Update a history row only when it belongs to the signed-in account."""
+    email = billing_actor(request)["email"]
+    from db_history import get_db
+
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    data = {key: value for key, value in fields.items() if value is not None}
+    if not data:
+        return {"ok": False, "message": "Nothing to update"}
+
+    await asyncio.sleep(0.5)
+    res = db.table("history").update(data).eq("id", record_id).eq("user_id", email).execute()
+    if not res.data:
+        raise HTTPException(404, "Record not found")
+    return {"ok": True, "updated": list(data.keys())}
 
 
 @app.post("/history/update")
 async def update_history(
+    request: Request,
     record_id: str = Form(...),
     hooks: Optional[str] = Form(None),
     hashtags: Optional[str] = Form(None),
@@ -699,37 +796,13 @@ async def update_history(
     final_url: Optional[str] = Form(None),
     titles: Optional[str] = Form(None),
 ):
-    from db_history import get_db
-    import asyncio
-    from fastapi import HTTPException
-
-    db = get_db()
-    if not db:
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-    data = {}
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
-    if summary is not None:
-        data["summary"] = summary
-    if final_url is not None:
-        data["final_url"] = final_url
-    if titles is not None:
-        data["titles"] = titles
-
-    if not data:
-        return {"ok": False, "message": "Nothing to update"}
-
-    await asyncio.sleep(0.5)
-    db.table("history").update(data).eq("id", record_id).execute()
-
-    return {"ok": True, "updated": list(data.keys())}
+    return await update_own_record(request, record_id, dict(
+        hooks=hooks, hashtags=hashtags, summary=summary, final_url=final_url, titles=titles))
 
 
 @app.post("/save_ai_insights")
 async def save_ai_insights(
+    request: Request,
     record_id: str = Form(...),
     hooks: Optional[str] = Form(None),
     hashtags: Optional[str] = Form(None),
@@ -737,33 +810,15 @@ async def save_ai_insights(
     titles: Optional[str] = Form(None),
     final_url: Optional[str] = Form(None),
 ):
-    from db_history import get_db
-    from fastapi import HTTPException
-    import asyncio
+    return await update_own_record(request, record_id, dict(
+        hooks=hooks, hashtags=hashtags, summary=summary, titles=titles, final_url=final_url))
 
-    db = get_db()
-    if not db:
-        raise HTTPException(status_code=500, detail="Database unavailable")
+@app.on_event("startup")
+def update_video_downloader():
+    """Newest yt-dlp on every start, in the background so the server is ready at once."""
+    import threading, url_media
+    threading.Thread(target=url_media.update_downloader, daemon=True).start()
 
-    data = {}
-    if hooks is not None:
-        data["hooks"] = hooks
-    if hashtags is not None:
-        data["hashtags"] = hashtags
-    if summary is not None:
-        data["summary"] = summary
-    if titles is not None:
-        data["titles"] = titles
-    if final_url is not None:
-        data["final_url"] = final_url
-
-    if not data:
-        return {"ok": False, "message": "Nothing to update"}
-
-    await asyncio.sleep(0.5)
-
-    db.table("history").update(data).eq("id", record_id).execute()
-    return {"ok": True, "updated": list(data.keys())}
 
 # Additive opt-in local Studios; disabled unless explicitly configured.
 if studios_enabled():

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import requests
 from fastapi import HTTPException
 from billing_identity import checkout_reference
-from url_media import download, MediaError
+from url_media import download, MediaError, MediaTooLarge, UnsupportedSource
 
 
 class TransportTests(unittest.TestCase):
@@ -22,14 +22,18 @@ class TransportTests(unittest.TestCase):
         node=next(n for n in ast.parse(source.read_text(encoding='utf-8')).body if isinstance(n,ast.AsyncFunctionDef) and n.name=='transcribe_audio')
         node.decorator_list=[]
         started=threading.Event();release=threading.Event()
-        def slow_download(url):
+        def slow_download(url,*limits):
             started.set();release.wait(.5)
             raise MediaError('Simulated host deadline; no external request made')
         scope=dict(UploadFile=UploadFile,File=File,Form=Form,JSONResponse=JSONResponse,
-                   asyncio=asyncio,os=os,MediaError=MediaError,download_to_tmp=slow_download)
+                   asyncio=asyncio,os=os,MediaError=MediaError,download_to_tmp=slow_download,
+                   Request=object,ai_actor=lambda request:{'email':'fixture'},
+                   own_media_file=lambda url:None,check_transcribe_url=lambda url:None,
+                   UnsupportedSource=UnsupportedSource,MediaTooLarge=MediaTooLarge,
+                   TRANSCRIBE_MAX_BYTES=500*1024*1024,TRANSCRIBE_MAX_SECONDS=1800)
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),scope)
         async def check():
-            task=asyncio.create_task(scope['transcribe_audio'](file=None,url='https://example.invalid/source.mp4',user_id='fixture'))
+            task=asyncio.create_task(scope['transcribe_audio'](file=None,url='https://www.youtube.com/watch?v=fixture',request=None))
             try:
                 await asyncio.sleep(.02)
                 self.assertTrue(started.is_set());self.assertFalse(task.done())

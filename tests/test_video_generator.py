@@ -18,7 +18,7 @@ class GeneratorTests(unittest.TestCase):
  def workflow(self,mode,version,duration=5,ratio='16:9'):
   with tempfile.TemporaryDirectory() as temp:
    folder=Path(temp);mp4=folder/'fixture.mp4'
-   subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',('color=c=blue:s=320x180:r=24' if ratio=='16:9' else 'color=c=blue:s=180x320:r=24'),'-t',str(duration),'-c:v','libx264','-pix_fmt','yuv420p',str(mp4)],check=True)
+   subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',('color=c=blue:s=1280x720:r=24' if ratio=='16:9' else 'color=c=blue:s=720x1280:r=24'),'-t',str(duration),'-c:v','libx264','-pix_fmt','yuv420p',str(mp4)],check=True)
    transport=CreditsTransport(self.image,video=mp4.read_bytes(),states=['success'])
    provider=kie.KieVideoProvider(kie.KieClient('contract-test',session=transport,sleep=lambda _:None))
    with patch.object(editor,'ASSETS',folder),patch.object(editor,'JOBS',folder),patch.object(video,'provider',provider):

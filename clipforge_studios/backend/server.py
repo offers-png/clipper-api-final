@@ -1,4 +1,5 @@
-﻿"""Isolated, offline media editor. No production imports, credentials, or cloud clients."""
+﻿"""Media clipping by transcript words (Text-to-Clip). No production imports or credentials of its own;
+transcribes with OpenAI Whisper when OPENAI_API_KEY is set, otherwise with the offline model."""
 import asyncio
 import hashlib
 import json
@@ -12,7 +13,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from . import media
+from . import media, openai_speech, link_media
 from .transcription import MODEL_PATH, transcribe
 
 ROOT = Path(__file__).resolve().parent
@@ -42,34 +43,56 @@ def load(video_id):
     if not path.is_file():
         raise HTTPException(404,'Upload and transcribe this video again. Old mock transcripts are not accepted.')
     data=json.loads(path.read_text(encoding='utf-8'))
-    if data.get('engine') != 'faster-whisper' or data.get('schema') != 2:
-        raise HTTPException(409,'Transcript is not from local speech recognition; transcribe again')
+    if data.get('engine') not in ('faster-whisper',openai_speech.ENGINE) or data.get('schema') != 2:
+        raise HTTPException(409,'Transcript is not from speech recognition; transcribe again')
     if not Path(data['source']).is_file() or digest(data['source']) != data['source_sha256']:
         raise HTTPException(409,'Source video changed. Transcribe the current source again.')
     return data
 
 @app.post('/api/videos')
 def upload(file: UploadFile = File(...)):
-    if not (MODEL_PATH/'model.bin').is_file():
+    cloud=openai_speech.enabled()
+    if not cloud and not (MODEL_PATH/'model.bin').is_file():
         raise HTTPException(503,'Local speech model is missing. Model download requires your approval. No mock transcript will be substituted.')
     video_id=uuid.uuid4().hex
     source=Path(media.UPLOAD_DIR)/(video_id+Path(file.filename or 'video.mp4').suffix)
-    audio=Path(media.TMP_DIR)/(video_id+'.wav')
     try:
         with source.open('wb') as output:shutil.copyfileobj(file.file,output)
+    except Exception:
+        source.unlink(missing_ok=True);raise HTTPException(400,'Could not save the uploaded video')
+    return transcribe_source(video_id,source,file.filename)
+
+@app.post('/api/videos/url')
+def from_link(body: link_media.Link):
+    """A YouTube, TikTok or Instagram video, downloaded and transcribed like an upload."""
+    if not openai_speech.enabled() and not (MODEL_PATH/'model.bin').is_file():
+        raise HTTPException(503,'Local speech model is missing. Model download requires your approval. No mock transcript will be substituted.')
+    video_id=uuid.uuid4().hex
+    source=link_media.fetch(body.link,Path(media.UPLOAD_DIR)/(video_id+'.mp4'))
+    return transcribe_source(video_id,source,link_media.name(body.link))
+
+def transcribe_source(video_id,source,name):
+    """Transcribe a saved video into STORE; the source is deleted if this fails."""
+    cloud=openai_speech.enabled();usd=0
+    audio=Path(media.TMP_DIR)/(video_id+'.wav')
+    try:
         duration=media.ffprobe_duration(str(source))
         if not duration or not math.isfinite(duration):raise HTTPException(400,'Unreadable video')
-        code,_=media.run(['ffmpeg','-v','error','-y','-i',str(source),'-map','0:a:0',
-            '-vn','-af','aresample=async=1:first_pts=0','-ar','16000','-ac','1','-c:a','pcm_s16le',str(audio)])
-        if code:raise HTTPException(400,'Cannot extract speech audio from this video')
-        transcript=transcribe(audio)
+        if cloud:
+            if not openai_speech.has_audio(source):raise HTTPException(400,'Cannot extract speech audio from this video')
+            transcript,usd=openai_speech.transcript(source,duration)
+        else:
+            code,_=media.run(['ffmpeg','-v','error','-y','-i',str(source),'-map','0:a:0',
+                '-vn','-af','aresample=async=1:first_pts=0','-ar','16000','-ac','1','-c:a','pcm_s16le',str(audio)])
+            if code:raise HTTPException(400,'Cannot extract speech audio from this video')
+            transcript=transcribe(audio)
         words=transcript['words']
         if not words:raise HTTPException(422,'No speech detected. No mock transcript was generated.')
         if any(not 0 <= w['start'] < w['end'] <= duration+.1 for w in words):
             raise HTTPException(422,'Speech alignment falls outside the video; cannot safely clip it')
         for w in words:w['end']=min(duration,w['end'])
         data=dict(**transcript,video_id=video_id,schema=2,duration=duration,source=str(source),
-                  source_sha256=digest(source),source_name=file.filename)
+                  source_sha256=digest(source),source_name=name,cost_usd=usd)
         (STORE/(video_id+'.json')).write_text(json.dumps(data),encoding='utf-8')
         return {k:v for k,v in data.items() if k!='source'}
     except HTTPException:
@@ -79,9 +102,9 @@ def upload(file: UploadFile = File(...)):
         source.unlink(missing_ok=True)
         raise HTTPException(503,str(exc))
     except Exception:
-        logging.exception('Local video transcription failed')
+        logging.exception('Video transcription failed')
         source.unlink(missing_ok=True)
-        raise HTTPException(500,'Local transcription failed. No fallback transcript was used.')
+        raise HTTPException(500,('OpenAI' if cloud else 'Local')+' transcription failed. No fallback transcript was used.')
     finally:audio.unlink(missing_ok=True)
 
 def extract(data,first,last,padding=0):
@@ -91,8 +114,10 @@ def extract(data,first,last,padding=0):
     start,end=max(0,word_start-padding),min(data['duration'],word_end+padding)
     filename=uuid.uuid4().hex+'.mp4'
     output=Path(media.PREVIEW_DIR)/filename
-    code,_=media.run(['ffmpeg','-v','error','-y','-i',data['source'],
-        '-ss',f'{start:.6f}','-t',f'{end-start:.6f}','-map','0:v:0','-map','0:a:0',
+    # Seek before -i: jumps straight to the clip instead of decoding everything before it
+    # (a clip at minute 20 took 48 s). Still exact, because the clip is re-encoded.
+    code,_=media.run(['ffmpeg','-v','error','-y','-ss',f'{start:.6f}','-i',data['source'],
+        '-t',f'{end-start:.6f}','-map','0:v:0','-map','0:a:0',
         '-c:v','libx264','-preset','veryfast','-crf','20','-c:a','aac',
         '-b:a','192k','-movflags','+faststart',str(output)])
     if code:

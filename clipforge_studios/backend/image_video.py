@@ -17,8 +17,10 @@ class Generation(BaseModel):
     image_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
     mode:Literal['text','image']='image'
     model:str|None=None
-    prompt:str=Field(default='',max_length=2000)
-    duration:int=Field(default=5,ge=2,le=30)
+    prompt:str=Field(default='',max_length=20000)
+    duration:int=Field(default=5,ge=1,le=30)
+    resolution:str|None=None
+    audio:Literal['model','off','on']|None=None
     ratio:Literal['16:9','9:16','1:1']='16:9'
     motion:Literal['Cinematic','Natural movement','Camera zoom','Camera pan','Animated character','Custom prompt']='Cinematic'
     quote_id:str|None=Field(default=None,pattern='^[a-f0-9]{32}$')
@@ -75,10 +77,15 @@ def worker(job,body):
         if info['kind']!='video' or abs(info['duration']-body.duration)>.5:raise ValueError('Provider output duration does not match the request')
         w,h=editor.SIZES[body.ratio]
         if abs(info['width']/info['height']-w/h)>.04:raise ValueError('Provider output aspect ratio does not match the request')
+        selected=video_models.estimate(binding(body))
+        tier=selected['resolution'].lower()
+        minimum={'2k':1024,'4k':2160}.get(tier)
+        if minimum is None:minimum=int(re.sub('[^0-9]','',tier))
+        if min(info['width'],info['height'])<minimum-16:raise ValueError('Provider output resolution is lower than the selected tier; no substitute result was accepted')
         # Normalize actual synthesized output to MP4 for the shared editor.
         editor.run(['-i',str(p.resolve()),'-map','0:v:0','-map','0:a?','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','finished.mp4'],folder)
         a=editor.save_asset(folder/'finished.mp4','AI generated video')
-        job.update(status='completed',stage='Ready',asset=a,url=f'/editor/files/{job["id"]}/finished.mp4',provider=provider.status()['name'],model=video_models.resolve(binding(body))['id'],mode=body.mode)
+        job.update(status='completed',stage='Ready',asset=a,url=f'/editor/files/{job["id"]}/finished.mp4',provider=provider.status()['name'],model=video_models.resolve(binding(body))['id'],mode=body.mode,resolution=selected['resolution'],output_dimensions=[info['width'],info['height']])
     except Exception as e:job.update(status='failed',stage='Stopped',error=str(e))
     finally:
         if job.get('paid_quote_id'):kie_account.finish(job['paid_quote_id'],job.get('status')=='completed')

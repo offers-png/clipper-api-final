@@ -18,6 +18,7 @@ from io import BytesIO
 import json
 
 from clipforge_studios.flags import studios_enabled
+import url_media
 from url_media import MediaError, audio_to_mp3, download, streams
 
 
@@ -109,7 +110,8 @@ class MediaTests(unittest.TestCase):
         real_run = subprocess.run
         def fake_downloader(command, **kwargs):
             if command[1:3] == ['-m', 'yt_dlp']:
-                self.assertIn('bv*+ba/b', command)
+                self.assertIn(url_media.VIDEO_FORMAT, command)
+                self.assertTrue(url_media.VIDEO_FORMAT.startswith('bv*[height<=1080][vcodec^=avc1]'))  # H.264, never 4K
                 self.assertIn('--ignore-config', command)
                 template = command[command.index('-o')+1]
                 destination = template.replace('%(ext)s', 'mkv')
@@ -123,6 +125,19 @@ class MediaTests(unittest.TestCase):
             self.assertTrue(any(s['codec_type']=='audio' for s in streams(source)))
         finally: Path(source).unlink()
 
+    def test_audio_only_downloads_just_the_sound(self):
+        real_run = subprocess.run; formats = []
+        def fake_downloader(command, **kwargs):
+            if command[1:3] == ['-m', 'yt_dlp']:
+                formats.append(command[command.index('-f')+1])
+                destination = command[command.index('-o')+1].replace('%(ext)s', 'mp4')
+                shutil.copy(self.root/'video.mp4', destination)
+                return subprocess.CompletedProcess(command, 0, destination+'\n', '')
+            return real_run(command, **kwargs)
+        with patch('url_media.subprocess.run', side_effect=fake_downloader):
+            Path(download('https://youtu.be/example', audio_only=True)).unlink()
+        self.assertEqual(formats, ['ba/b'])
+
     def test_original_transcribe_route_converts_and_cleans_files(self):
         # Execute the real route body without bootstrapping cloud integrations.
         self.check_transcribe_route('video.mp4', 200, True)
@@ -131,6 +146,7 @@ class MediaTests(unittest.TestCase):
         self.check_transcribe_route('silent.mp4', 422, False)
 
     def check_transcribe_route(self, filename, status, calls_api):
+        import app as backend
         source = Path(__file__).resolve().parents[1]/'app.py'
         tree = ast.parse(source.read_text(encoding='utf-8'))
         function = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name=='transcribe_audio')
@@ -141,12 +157,17 @@ class MediaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as uploads:
             scope=dict(UploadFile=UploadFile, File=File, Form=Form, JSONResponse=JSONResponse,
                        os=os, asyncio=asyncio, safe=lambda value:value, nowstamp=lambda:'test', UPLOAD_DIR=uploads,
-                       audio_to_mp3=audio_to_mp3, MediaError=MediaError, client=client,
-                       insert_transcript=database, print=Mock())
+                       transcribe_media=backend.transcribe_media, MediaError=MediaError, client=client,
+                       insert_transcript=database, print=Mock(), Request=object,
+                       ai_actor=Mock(return_value={'email':'offline-contract-user'}),
+                       save_upload=backend.save_upload, own_media_file=backend.own_media_file,
+                       check_transcribe_url=backend.check_transcribe_url, check_media_limits=backend.check_media_limits,
+                       UnsupportedSource=backend.UnsupportedSource, MediaTooLarge=backend.MediaTooLarge,
+                       TRANSCRIBE_MAX_BYTES=backend.TRANSCRIBE_MAX_BYTES, TRANSCRIBE_MAX_SECONDS=backend.TRANSCRIBE_MAX_SECONDS)
             exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),scope)
             response=asyncio.run(scope['transcribe_audio'](
                 file=UploadFile(BytesIO((self.root/filename).read_bytes()),filename=filename),
-                url=None,user_id='offline-contract-user'))
+                url=None,request=None))
             self.assertEqual(response.status_code,status,response.body)
             self.assertEqual(client.audio.transcriptions.create.called,calls_api)
             self.assertEqual(database.called,calls_api)

@@ -3,3 +3,7 @@
 numpy>=2,<3
 faster-whisper>=1.2,<2
 httpx>=0.27,<0.28
+# Designed thumbnails (models: tools/prepare_thumbnail_design_models.py)
+pillow>=11
+opencv-python-headless>=4.10
+onnxruntime>=1.20

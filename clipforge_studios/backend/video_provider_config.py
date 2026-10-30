@@ -22,7 +22,7 @@ def load(fallback,kind='video'):
         if not isinstance(status,dict) or not isinstance(status.get('available'),bool):raise ValueError()
         if status['available'] and kind=='video':
             if not status.get('name') or not status.get('durations') or not status.get('ratios'):raise ValueError()
-            if any(type(t)!=int or not 2<=t<=30 for t in status['durations']):raise ValueError()
+            if any(type(t)!=int or not 1<=t<=30 for t in status['durations']):raise ValueError()
             if any(r not in ('16:9','9:16','1:1') for r in status['ratios']):raise ValueError()
         return provider
     except Exception:
