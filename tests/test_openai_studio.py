@@ -65,6 +65,31 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn('only for the 4 candidates that fit best', client.calls[0]['messages'][0]['content'])
 
 
+class SpreadTests(unittest.TestCase):
+    # 300-second video, 30-second candidates every 30 s; the top scores all sit at the start.
+    OPTIONS = [dict(id=i, start=i * 30.0, end=i * 30.0 + 30) for i in range(10)]
+
+    def ranked(self, scores):
+        items = [dict(id=i, suitable=True, score=s) for i, s in enumerate(scores)]
+        return sorted(items, key=lambda i: i['score'], reverse=True)
+
+    def test_one_pick_from_the_beginning_middle_and_end(self):
+        chosen = studio.spread(self.ranked([.99, .98, .97, .9, .8, .85, .7, .75, .66, .95]), self.OPTIONS, 3, 300)
+        self.assertEqual([c['id'] for c, _ in chosen], [0, 5, 9])  # best of 0-100 s, 100-200 s, 200-300 s
+
+    def test_an_empty_part_is_filled_with_the_next_best_anywhere(self):
+        scores = [.99, .98, .97, .9, .5, .5, .5, .95, .5, .5]  # nothing good enough in the middle
+        chosen = studio.spread(self.ranked(scores), self.OPTIONS, 3, 300)
+        self.assertEqual([c['id'] for c, _ in chosen], [0, 1, 7])
+
+    def test_unsuitable_low_and_overlapping_moments_are_skipped(self):
+        options = self.OPTIONS + [dict(id=10, start=10.0, end=40.0)]
+        ranked = self.ranked([.99, .5, .5, .5, .5, .5, .5, .5, .5, .5, .98])
+        ranked[1]['suitable'] = False
+        chosen = studio.spread(ranked, options, 3, 300)
+        self.assertEqual([c['id'] for c, _ in chosen], [0])
+
+
 class SpeechTests(unittest.TestCase):
     WORDS = [dict(word='Hello', start=0.0, end=0.4), dict(word='there.', start=0.5, end=0.5),
              dict(word='Why', start=1.0, end=1.2), dict(word='not?', start=1.3, end=1.6)]
@@ -137,6 +162,20 @@ class TextToClipTests(unittest.TestCase):
             clip = http.post(f'/api/videos/{uploaded.json()["video_id"]}/selection', json=dict(first=0, last=1))
         self.assertEqual(clip.status_code, 200, clip.text)
         self.assertEqual(clip.json()['text'], 'Hello there.')
+        self.assertAlmostEqual(clip.json()['actual_duration'], 0.9, delta=0.1)  # exact despite the fast seek
+
+    def test_clips_seek_before_reading_the_video(self):
+        calls = []
+        def run(command, **_):
+            calls.append(command); Path(command[-1]).write_bytes(b'x'); return 0, ''
+        data = dict(words=[dict(word='a', start=1200.0, end=1201.0), dict(word='b', start=1201.0, end=1205.0)],
+                    duration=1700.0, source='video.mp4')
+        with patch.object(server.media, 'run', side_effect=run), patch.object(server.media, 'ffprobe_duration', return_value=5.0):
+            result = server.extract(data, 0, 1)
+        Path(server.media.PREVIEW_DIR, result['preview_url'].rsplit('/', 1)[1]).unlink(missing_ok=True)
+        command = calls[0]
+        self.assertLess(command.index('-ss'), command.index('-i'))
+        self.assertEqual(command[command.index('-ss') + 1], '1200.000000')
 
 
 if __name__ == '__main__':

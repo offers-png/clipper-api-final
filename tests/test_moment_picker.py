@@ -1,6 +1,8 @@
 """OpenAI moment picking and word transcription: checked like local results, local models only without a key."""
 import json
 import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -65,6 +67,32 @@ class MomentPickerTests(unittest.TestCase):
         self.assertNotIn('temperature', client.calls[0])
         self.assertAlmostEqual(usd, (10_000 * 0.05 + 2_000 * 0.40) / 1_000_000)
 
+    def test_each_design_gets_its_part_of_the_video(self):
+        rows = thumb.phrases(words())  # starts 0, 3.5, 6, 8, 10; ends 12.4
+        self.assertEqual(thumb.thirds(rows), [(0, 1), (2, 3), (4, 4)])
+        self.assertIsNone(thumb.thirds(rows[:1]))  # too short to split
+        concepts = reply(ids=(0, 2, 4))['concepts']
+        answer = dict(topic='Memory', beginning=dict(concepts[0], phrase_id='B0'), middle=dict(concepts[1], phrase_id='M2'),
+                      end=dict(concepts[2], phrase_id='E4'))
+        client = FakeChat(answer)
+        result, _ = moment_picker.pick([dict(id=r['id'], text=r['text']) for r in rows], thumb.STYLES, '', (), client,
+                                       ranges=thumb.thirds(rows))
+        sent = json.loads(client.calls[0]['messages'][1]['content'])
+        self.assertEqual([p['id'] for p in sent['phrases']], ['B0', 'B1', 'M2', 'M3', 'E4'])
+        self.assertEqual([d['part'] for d in sent['designs']], ['beginning', 'middle', 'end'])
+        schema = client.calls[0]['response_format']['json_schema']['schema']['properties']
+        self.assertEqual([schema[p]['properties']['phrase_id']['pattern'] for p in ('beginning', 'middle', 'end')],
+                         ['^B[0-9]+$', '^M[0-9]+$', '^E[0-9]+$'])
+        self.assertEqual([c['phrase_id'] for c in result['concepts']], [0, 2, 4])
+        self.assertEqual(result['concepts'][1]['headline'], 'Why Does This Happen?')
+
+    def test_a_pick_outside_its_part_is_flagged(self):
+        job = {}
+        with patch.object(moment_picker, 'pick', return_value=(reply(ids=(0, 2, 3)), None)) as pick:
+            thumb.openai_plan(words(), [], job)
+        self.assertEqual(pick.call_args.kwargs['ranges'], [(0, 1), (2, 3), (4, 4)])
+        self.assertEqual(job['warnings'], ['Concept 3 is not from its part of the video (beginning, middle, end).'])
+
     def test_unknown_model_price_reports_no_cost(self):
         self.assertIsNone(moment_picker.cost('some-new-model', SimpleNamespace(prompt_tokens=1, completion_tokens=1)))
 
@@ -122,7 +150,8 @@ class TranscribeWordsTests(unittest.TestCase):
         def create(**options):
             calls.append(options); return results[len(calls) - 1]
         client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
-        with patch.object(openai_audio, 'prepare_parts', return_value=[(os.devnull, 0.0), (os.devnull, 60.0)]):
+        with patch.object(openai_audio, 'word_parts', return_value=[(os.devnull, 0.0), (os.devnull, 60.0)]), \
+                patch.object(openai_audio, 'PARALLEL_PARTS', 1):  # answers are matched to calls by order
             result = openai_audio.transcribe_words(client, 'video.mp4')
         self.assertEqual([w['word'] for w in result], ['Hello', 'there.', 'Why', 'not?', 'Bye!'])
         self.assertEqual(result[-1], dict(word='Bye!', start=60.0, end=60.3))
@@ -134,6 +163,33 @@ class TranscribeWordsTests(unittest.TestCase):
         segments = [dict(text=' a line of code. AI agents broke,'), dict(text=" you'll see! Why not?\"")]
         openai_audio.add_sentence_marks(words, segments)
         self.assertEqual(' '.join(w['word'] for w in words), "a line of code. AI agents broke you'll see! Why not?")
+
+    def test_long_audio_is_cut_at_pauses_into_parts_of_at_most_ten_minutes(self):
+        self.assertEqual(openai_audio.cut_points(300, []), [0.0, 300])  # short: one part
+        self.assertEqual(openai_audio.cut_points(1671, [100, 570, 590.5, 640, 1150, 1185]), [0.0, 590.5, 1185, 1671])
+        self.assertEqual(openai_audio.cut_points(1300, []), [0.0, 600, 1200, 1300])  # no pauses: cut at the limit
+
+    def test_parts_are_transcribed_together_and_kept_in_order(self):
+        def create(file, **options):
+            # Later parts answer first; the result must still be in time order.
+            offset = 1 if file.name.endswith('a') else 0
+            return dict(words=[dict(word=f'w{offset}', start=1.0, end=2.0)], segments=[dict(text=f'w{offset}.')])
+        client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+        with tempfile.TemporaryDirectory() as folder:
+            first, second = Path(folder) / 'part0', Path(folder) / 'part1a'
+            first.write_bytes(b''); second.write_bytes(b'')
+            with patch.object(openai_audio, 'word_parts', return_value=[(first, 0.0), (second, 600.0)]):
+                words = openai_audio.transcribe_words(client, 'video.mp4')
+        self.assertEqual(words, [dict(word='w0.', start=1.0, end=2.0), dict(word='w1.', start=601.0, end=602.0)])
+
+    def test_a_long_mismatch_does_not_stop_later_marks(self):
+        # The text has a run of words Whisper's word list lacks; marks after it must still land.
+        spoken = 'first part ends here. then more talk. last bit ends. final words now.'.split()
+        words = [dict(word=w.rstrip('.'), start=0, end=1) for w in spoken]
+        noise = ' '.join(f'zz{i}' for i in range(12))
+        segments = [dict(text='first part ends here. ' + noise), dict(text='then more talk. last bit ends. final words now.')]
+        openai_audio.add_sentence_marks(words, segments)
+        self.assertEqual(' '.join(w['word'] for w in words), ' '.join(spoken))
 
     def test_words_missing_from_the_text_do_not_shift_the_marks(self):
         words = [dict(word=w, start=0, end=1) for w in ['so', 'um', 'it', 'works', 'Great']]

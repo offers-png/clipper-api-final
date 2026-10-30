@@ -4,6 +4,8 @@ Audio is sent as mono 32 kbps MP3 (about 14 MB per hour). Anything still over
 the limit is cut from the original into equal parts, each encoded on its own,
 and segment timestamps are shifted by each part's start time.
 """
+from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
 import json
 import math
 import re
@@ -96,33 +98,76 @@ def _plain(text):
 def add_sentence_marks(words, segments):
     """Copy . ! ? from the segment text onto Whisper's unpunctuated words.
 
-    Segments can end sentences mid-way ("...of code. AI agents..."), so words are
-    matched to the text's words in order, looking a few words ahead to skip extras.
+    Segments can end sentences mid-way ("...of code. AI agents..."), so the whole
+    word list is aligned with the text's words (difflib). A local look-ahead lost
+    its place at the first long mismatch and left the rest of a video unpunctuated.
     """
     tokens = [t for s in segments for t in (_field(s, 'text') or '').split()]
-    j = 0
-    for word in words:
-        key = _plain(word['word'])
-        for k in range(j, min(j + 4, len(tokens))):
-            if _plain(tokens[k]) == key:
-                mark = tokens[k].rstrip('"\'”’)')[-1:]
-                if mark in ('.', '!', '?') and not word['word'].endswith(('.', '!', '?')):
-                    word['word'] += mark
-                j = k + 1
-                break
+    matcher = SequenceMatcher(None, [_plain(w['word']) for w in words], [_plain(t) for t in tokens], autojunk=False)
+    for block in matcher.get_matching_blocks():
+        for k in range(block.size):
+            word, token = words[block.a + k], tokens[block.b + k]
+            mark = token.rstrip('"\'”’)')[-1:]
+            if mark in ('.', '!', '?') and not word['word'].endswith(('.', '!', '?')):
+                word['word'] += mark
 
 
-def transcribe_words(client, source, max_bytes=OPENAI_MAX_BYTES):
+# Whisper stops punctuating long requests that ask for word times (a 28-minute
+# video had no sentence ends after minute 11; the same audio in 4 minutes was
+# fully punctuated), so word transcripts are requested in parts of this length.
+WORD_PART_SECONDS = 600
+PARALLEL_PARTS = 4
+
+
+def pauses(source):
+    """Midpoints, in seconds, of the source's silent stretches."""
+    try:
+        result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-i', str(source), '-vn', '-af',
+                                 # -30 dB / 0.25 s still finds the short gaps between sentences under background music
+                                 'silencedetect=noise=-30dB:d=0.25', '-f', 'null', '-'], capture_output=True, text=True, timeout=900)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    starts = [float(t) for t in re.findall(r'silence_start: (-?[0-9.]+)', result.stderr)]
+    ends = [float(t) for t in re.findall(r'silence_end: ([0-9.]+)', result.stderr)]
+    return [(a + b) / 2 for a, b in zip(starts, ends)]
+
+
+def cut_points(total, quiet, longest=WORD_PART_SECONDS):
+    """Part starts plus the end: each cut at the latest pause in the minute before `longest`
+    seconds of audio, so no word is split; at exactly `longest` when there is no pause."""
+    points = [0.0]
+    while total - points[-1] > longest:
+        limit = points[-1] + longest
+        near = [q for q in quiet if limit - 60 <= q <= limit]
+        points.append(max(near) if near else limit)
+    return points + [total]
+
+
+def word_parts(source, folder):
+    """[(mp3 path, start seconds)] of at most WORD_PART_SECONDS each (always under the upload limit)."""
+    if not any(s.get('codec_type') == 'audio' for s in streams(source)):
+        raise MediaError('This video has no audio track to transcribe.')
+    total = duration(source)
+    points = cut_points(total, pauses(source) if total > WORD_PART_SECONDS else [])
+    parts = []
+    for i, (start, end) in enumerate(zip(points, points[1:])):
+        path = Path(folder) / f'words_{i:03d}.mp3'
+        encode(source, path, start, end - start)
+        parts.append((path, start))
+    return parts
+
+
+def transcribe_words(client, source):
     """[{word, start, end}] for the whole source, with sentence punctuation; times are in source seconds."""
-    words = []
-    with tempfile.TemporaryDirectory(prefix='clipforge-openai-') as folder:
-        for path, offset in prepare_parts(source, folder, max_bytes):
-            with open(path, 'rb') as audio:
-                result = client.audio.transcriptions.create(model='whisper-1', file=audio, response_format='verbose_json',
-                                                            timestamp_granularities=['word', 'segment'])
-            part = [dict(word=(_field(w, 'word') or '').strip(), start=round(_field(w, 'start') + offset, 3),
-                         end=round(_field(w, 'end') + offset, 3)) for w in _field(result, 'words') or []]
-            part = [w for w in part if w['word']]
-            add_sentence_marks(part, _field(result, 'segments') or [])
-            words += part
-    return words
+    def part_words(part):
+        path, offset = part
+        with open(path, 'rb') as audio:
+            result = client.audio.transcriptions.create(model='whisper-1', file=audio, response_format='verbose_json',
+                                                        timestamp_granularities=['word', 'segment'])
+        found = [dict(word=(_field(w, 'word') or '').strip(), start=round(_field(w, 'start') + offset, 3),
+                      end=round(_field(w, 'end') + offset, 3)) for w in _field(result, 'words') or []]
+        found = [w for w in found if w['word']]
+        add_sentence_marks(found, _field(result, 'segments') or [])
+        return found
+    with tempfile.TemporaryDirectory(prefix='clipforge-openai-') as folder, ThreadPoolExecutor(PARALLEL_PARTS) as pool:
+        return [w for found in pool.map(part_words, word_parts(source, folder)) for w in found]

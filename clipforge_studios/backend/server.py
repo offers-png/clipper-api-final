@@ -114,8 +114,10 @@ def extract(data,first,last,padding=0):
     start,end=max(0,word_start-padding),min(data['duration'],word_end+padding)
     filename=uuid.uuid4().hex+'.mp4'
     output=Path(media.PREVIEW_DIR)/filename
-    code,_=media.run(['ffmpeg','-v','error','-y','-i',data['source'],
-        '-ss',f'{start:.6f}','-t',f'{end-start:.6f}','-map','0:v:0','-map','0:a:0',
+    # Seek before -i: jumps straight to the clip instead of decoding everything before it
+    # (a clip at minute 20 took 48 s). Still exact, because the clip is re-encoded.
+    code,_=media.run(['ffmpeg','-v','error','-y','-ss',f'{start:.6f}','-i',data['source'],
+        '-t',f'{end-start:.6f}','-map','0:v:0','-map','0:a:0',
         '-c:v','libx264','-preset','veryfast','-crf','20','-c:a','aac',
         '-b:a','192k','-movflags','+faststart',str(output)])
     if code:

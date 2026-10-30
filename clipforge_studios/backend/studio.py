@@ -70,6 +70,24 @@ def candidate_ranges(words,target):
     return result
 
 
+def spread(ranked,options,count,duration):
+    """[(clip, analysis)]: the best suitable, non-overlapping moment from each equal part of the
+    video first (beginning, middle and end for three), then the next best anywhere; in time order."""
+    good=[item for item in ranked if item['suitable'] and item['score']>=.65]
+    chosen=[]
+    def free(item):
+        c=options[item['id']]
+        return all(i['id']!=item['id'] for _,i in chosen) and not any(c['start']<p['end'] and c['end']>p['start'] for p,_ in chosen)
+    for part in range(count):
+        low,high=duration*part/count,duration*(part+1)/count
+        item=next((i for i in good if low<=options[i['id']]['start']<high and free(i)),None)
+        if item:chosen.append((options[item['id']],item))
+    for item in good:
+        if len(chosen)==count:break
+        if free(item):chosen.append((options[item['id']],item))
+    return sorted(chosen,key=lambda pair:pair[0]['start'])
+
+
 def _save(job):
     temporary=JOBS/(job['id']+'.tmp')
     temporary.write_text(json.dumps(job,ensure_ascii=False),encoding='utf-8')
@@ -161,13 +179,9 @@ def _worker(job,body,data):
             update(job,stage=f'Ranking real transcript content with {engine}',progress=.12)
             options=candidate_ranges(words,body.duration)
             if not options:raise ValueError('No complete sentence ranges fit this duration. Choose another duration.')
-            clips=[];seen=set()
-            for item in analyse(options,body.count+3):
-                if not item['suitable'] or item['score']<.65 or item['id'] in seen:continue
-                c=options[item['id']]
-                if any(c['start']<p['end'] and c['end']>p['start'] for p in clips):continue
-                clips.append(c);analyses[c['id']]=item;seen.add(c['id'])
-                if len(clips)==body.count:break
+            clips=[]
+            for c,item in spread(analyse(options,body.count+3),options,body.count,data['duration']):
+                clips.append(c);analyses[c['id']]=item
             if not clips:
                 update(job,status='completed',stage='No suitable moments',progress=1,
                     message=f'{engine} found no sufficiently supported {studio_ai.CATEGORIES[body.category].lower()} in the transcript. No content was invented.',items=[],coverage=None)

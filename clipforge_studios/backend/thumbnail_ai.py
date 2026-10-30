@@ -269,22 +269,35 @@ def plan(words,observations=()):
             return data
         finally:studio_ai.shutdown()
 
+def thirds(rows):
+    """(first_id, last_id) of the phrases starting in the beginning, middle and end third of the
+    video, or None when a third has no dialogue (short videos)."""
+    end=rows[-1]['end'];parts=[]
+    for part in range(3):
+        ids=[row['id'] for row in rows if end*part/3<=row['start']<end*(part+1)/3]
+        if not ids:return None
+        parts.append((ids[0],ids[-1]))
+    return parts
+
 def openai_plan(words,observations,job):
     """plan() with OpenAI choosing the moments and writing topic headlines (2-4 words, for designed
     thumbnails); its reply is checked like the local model's. Rejected headlines fall back to the topic."""
     text=' '.join(w['word'] for w in words);rows=phrases(words)
     if len({studio_ai.normal(row['text']) for row in rows})<3:raise ValueError('Not enough distinct dialogue for three grounded concepts. Use a longer spoken video.')
+    ranges=thirds(rows)
     reply,usd=moment_picker.pick([dict(id=row['id'],text=row['text']) for row in rows],STYLES,HEADLINE_RULES.replace('2 to 5 words','2 to 4 words'),
-        [dict(time=round(o['time'],1),description=o['description'][:120]) for o in observations])
+        [dict(time=round(o['time'],1),description=o['description'][:120]) for o in observations],ranges=ranges)
     job.setdefault('cost_usd',{})['moments']=usd
     picks=reply.get('concepts') or []
     if len(picks)<3:raise ValueError('OpenAI returned fewer than three moments; results rejected')
     by_id={row['id']:row for row in rows};quotes=set();headlines=set();from_openai=0
     topic=' '.join((reply.get('topic') or '').split()[:4])
     data=dict(topic=topic,concepts=[])
-    for c in picks[:3]:
+    for i,c in enumerate(picks[:3]):
         source=by_id.get(c.get('phrase_id'))
         if source is None or studio_ai.normal(source['text']) in quotes:raise ValueError('OpenAI picked an unknown or repeated moment; results rejected')
+        if ranges and not ranges[i][0]<=source['id']<=ranges[i][1]:
+            job.setdefault('warnings',[]).append(f'Concept {i+1} is not from its part of the video (beginning, middle, end).')
         quotes.add(studio_ai.normal(source['text']))
         proposed=' '.join((c.get('headline') or '').split())
         if len(proposed.split())>4:proposed=''
