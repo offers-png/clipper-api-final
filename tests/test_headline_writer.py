@@ -76,14 +76,14 @@ class HeadlineWriterTests(unittest.TestCase):
         self.assertEqual([c['title'] for c in result['concepts']], ['You Were Halfway', 'Why Does This Happen?', 'Why Do We Forget Sources?'])
         self.assertEqual(result['headline_engine'], 'OpenAI gpt-5-nano (1 of 3; rest local)')
 
-    def test_duplicate_of_a_local_title_falls_back_to_the_quote(self):
+    def test_duplicate_of_a_local_title_is_rebuilt_from_the_topic(self):
         result = analysis()
         with patch.object(headline_writer, 'request_headlines', return_value=['Why Does This Happen?', None, None]):
             thumb.improve_headlines(result, SOURCE)
         titles = [c['title'] for c in result['concepts']]
         self.assertEqual(titles[0], 'Why Does This Happen?')
         self.assertEqual(len({t.casefold() for t in titles}), 3)
-        self.assertEqual(titles[1], 'Why Does This Happen')  # local title already used; built from its quote
+        self.assertEqual(titles[1], 'Memory Explained')  # local title already used; built from the topic, not its quote
 
     def test_openai_errors_keep_all_local_titles(self):
         result = analysis()

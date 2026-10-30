@@ -109,15 +109,40 @@ class MomentPickerTests(unittest.TestCase):
         self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini')
         self.assertEqual(job['cost_usd'], {'moments': 0.0012})
 
-    def test_rule_breaking_or_long_headlines_fall_back_to_the_topic_not_the_quote(self):
-        bad = reply(headlines=('A Moment of Truth', 'Why Does This Keep Happening?', 'Memory Saves The Story'))
-        with patch.object(moment_picker, 'pick', return_value=(bad, None)) as pick:
-            result = thumb.openai_plan(words(), [], {})
+    def test_rejected_headlines_are_retried_with_openai_then_built_from_the_topic(self):
+        bad = reply(headlines=('A Moment of Truth', 'Why Does This Keep Happening?', 'Memory Saves The Story'))  # filler, 5 words, valid
+        job = {}
+        with patch.object(moment_picker, 'pick', return_value=(bad, 0.001)) as pick, \
+                patch.object(moment_picker, 'rewrite_headlines', return_value=(['Why Memory Fails?', 'A Moment of Truth'], 0.0002)) as rewrite:
+            result = thumb.openai_plan(words(), [], job)
         self.assertIn('2 to 4 words', pick.call_args.args[2])
-        self.assertEqual(result['concepts'][0]['title'], 'How Memory Loses Sources')
+        topic, styles, rules, avoid = rewrite.call_args.args
+        self.assertEqual((topic, len(styles), avoid), ('How Memory Loses Sources', 2, ['memory saves the story']))
+        self.assertEqual([c['title'] for c in result['concepts']], ['Why Memory Fails?', 'How Memory Loses Sources', 'Memory Saves The Story'])
         self.assertIsNone(result['concepts'][0]['key_word'])
-        self.assertEqual(result['concepts'][1]['title'], 'Why Does This Happen')  # topic already used; built from the quote
-        self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini (1 of 3; rest from the topic)')
+        self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini (1 rewritten, 1 from the topic)')
+        self.assertAlmostEqual(job['cost_usd']['moments'], 0.0012)
+
+    def test_failed_retry_still_never_uses_a_quote(self):
+        bad = dict(reply(headlines=('A Moment of Truth',) * 3), topic='Memory And Sources')
+        with patch.object(moment_picker, 'pick', return_value=(bad, None)), \
+                patch.object(moment_picker, 'rewrite_headlines', side_effect=TimeoutError('slow')):
+            result = thumb.openai_plan(words(), [], {})
+        # "sources" is never said in the video, so variations use "memory", which is
+        self.assertEqual([c['title'] for c in result['concepts']], ['Memory And Sources', 'Memory Explained', 'Inside Memory'])
+        self.assertEqual(result['headline_engine'], 'OpenAI gpt-4o-mini (0 rewritten, 3 from the topic)')
+
+    def test_rewrite_asks_for_new_topic_headlines_unlike_the_used_ones(self):
+        client = FakeChat(None)
+        client.create = lambda **options: (client.calls.append(options), SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({'headlines': ['Why Memory Fails?']})))]))[1]
+        client.chat = SimpleNamespace(completions=SimpleNamespace(create=client.create))
+        headlines, usd = moment_picker.rewrite_headlines('Memory', ['a question'], 'rules. ', ['memory saves the story'], client)
+        self.assertEqual(headlines, ['Why Memory Fails?'])
+        sent = json.loads(client.calls[0]['messages'][1]['content'])
+        self.assertEqual(sent, dict(topic='Memory', styles=['a question'], avoid=['memory saves the story']))
+        self.assertTrue(client.calls[0]['response_format']['json_schema']['strict'])
 
     def test_saved_transcript_is_reused_without_a_new_charge(self):
         job, source = {}, dict(openai_words=words(), source='video.mp4', duration=60.0)

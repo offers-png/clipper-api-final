@@ -170,25 +170,35 @@ def thumbnail_text(title,key=None):
     rank=[(any(ch.isdigit() for ch in w),w not in SMALL_WORDS,len(w)) for w in plain]
     return words,max(range(len(words)),key=rank.__getitem__)
 
-def fallback_headline(text):
-    """Up to 5 words from the source itself, never ending on a dangling word."""
-    words=re.findall(r"[A-Za-z0-9']+",text)[:5]
-    while len(words)>2 and words[-1].casefold() in DANGLING:words.pop()
-    return ' '.join(w[:1].upper()+w[1:] for w in words)
+def topic_headline(topic,used,context):
+    """A title built from the video's topic, never from a quote (those read as cut-off sentences,
+    e.g. "In A Business Until Somebody"): the topic itself, then short variations of its last words;
+    the first that passes the headline rules and is unused."""
+    words=[w if w.isupper() and len(w)<=3 else w[:1].upper()+w[1:].lower() for w in re.findall(r"[A-Za-z0-9']+",topic or '')][:4]
+    if not words:raise ValueError('No video topic to build a thumbnail title from')
+    # Variations are built on topic words the video actually says (titles must share a key word with it).
+    vocabulary=set(re.findall(r"[a-z0-9']+",(context or '').casefold()))
+    said=[i for i,w in enumerate(words) if related(w,vocabulary)]
+    last=said[-1] if said else len(words)-1
+    core=words[max(0,last-1):last+1]  # the last word the video says, with the word before it
+    while len(core)>1 and core[0].casefold() in SMALL_WORDS:core=core[1:]  # "And Stories" -> "Stories"
+    core=' '.join(core)
+    for candidate in (' '.join(words),f'{core} Explained',f'Inside {core}',f'Why {core}?',f'The {core} Secret',f'{core} Made Easy'):
+        title=punchy(candidate,context)
+        if title and len(title.split())<=4 and title.casefold() not in used:
+            used.add(title.casefold());return title
+    raise ValueError('Could not write three distinct thumbnail titles from the video topic')
 
-def choose_headline(proposed,source,used,context="",retry=None,attempts=2):
+def choose_headline(proposed,topic,used,context="",retry=None,attempts=2):
     """Model headline if valid and unused; otherwise up to `attempts` retries via retry(n),
-    then a fallback from the source. context is all source text."""
+    then a title built from the video's topic. context is all source text."""
     for attempt in range(attempts+1):
-        candidate=punchy(proposed,context or source)
+        candidate=punchy(proposed,context or topic)
         if candidate and candidate.casefold() not in used:
             used.add(candidate.casefold());return candidate
         if retry is None or attempt==attempts:break
         proposed=retry(attempt)
-    candidate=fallback_headline(source)
-    if candidate and candidate.casefold() not in used:
-        used.add(candidate.casefold());return candidate
-    raise ValueError('Could not prepare three distinct thumbnail headlines')
+    return topic_headline(topic,used,context or topic)
 
 def improve_headlines(analysis,source_text):
     """Use OpenAI headlines where available and valid; keep the local headline otherwise."""
@@ -204,7 +214,7 @@ def improve_headlines(analysis,source_text):
     for c,candidate in zip(concepts,proposed):
         candidate=punchy(candidate,source_text)
         if candidate and candidate.casefold() not in used:c['title']=candidate;from_openai+=1
-        elif c['title'].casefold() in used:c['title']=fallback_headline(c['evidence'])
+        elif c['title'].casefold() in used:c['title']=topic_headline(analysis.get('topic',''),used,source_text)
         used.add(c['title'].casefold())
     name='OpenAI '+headline_writer.model()
     analysis['headline_engine']=name if from_openai==len(concepts) else f'{name} ({from_openai} of {len(concepts)}; rest local)'
@@ -261,7 +271,7 @@ def plan(words,observations=()):
                 titles.add(quote)
                 source=next((row for row in rows if studio_ai.normal(row['text'])==studio_ai.normal(c['evidence'])),None)
                 if source is None:raise ValueError('AI evidence does not match a timestamped source phrase')
-                c.update(time=source['start'],end=source['end'],title=choose_headline(c.pop('headline'),source['text'],headlines,text,
+                c.update(time=source['start'],end=source['end'],title=choose_headline(c.pop('headline'),data['topic'] or c.get('topic',''),headlines,text,
                     retry=lambda attempt,a=approach,q=source['text']:write_headline(a,q,text,.7+.2*attempt)))
                 if not data['topic']:data['topic']=c.pop('topic')
                 else:c.pop('topic',None)
@@ -281,7 +291,8 @@ def thirds(rows):
 
 def openai_plan(words,observations,job):
     """plan() with OpenAI choosing the moments and writing topic headlines (2-4 words, for designed
-    thumbnails); its reply is checked like the local model's. Rejected headlines fall back to the topic."""
+    thumbnails); its reply is checked like the local model's. Rejected headlines get one OpenAI retry,
+    then a title built from the topic; never a quote."""
     text=' '.join(w['word'] for w in words);rows=phrases(words)
     if len({studio_ai.normal(row['text']) for row in rows})<3:raise ValueError('Not enough distinct dialogue for three grounded concepts. Use a longer spoken video.')
     ranges=thirds(rows)
@@ -290,24 +301,40 @@ def openai_plan(words,observations,job):
     job.setdefault('cost_usd',{})['moments']=usd
     picks=reply.get('concepts') or []
     if len(picks)<3:raise ValueError('OpenAI returned fewer than three moments; results rejected')
-    by_id={row['id']:row for row in rows};quotes=set();headlines=set();from_openai=0
+    by_id={row['id']:row for row in rows};quotes=set();used=set()
     topic=' '.join((reply.get('topic') or '').split()[:4])
-    data=dict(topic=topic,concepts=[])
+    rules=HEADLINE_RULES.replace('2 to 5 words','2 to 4 words')
+    def valid(headline):
+        headline=punchy(' '.join((headline or '').split()),text)
+        return headline if headline and len(headline.split())<=4 and headline.casefold() not in used else None
+    data=dict(topic=topic,concepts=[]);titles=[]
     for i,c in enumerate(picks[:3]):
         source=by_id.get(c.get('phrase_id'))
         if source is None or studio_ai.normal(source['text']) in quotes:raise ValueError('OpenAI picked an unknown or repeated moment; results rejected')
         if ranges and not ranges[i][0]<=source['id']<=ranges[i][1]:
             job.setdefault('warnings',[]).append(f'Concept {i+1} is not from its part of the video (beginning, middle, end).')
         quotes.add(studio_ai.normal(source['text']))
-        proposed=' '.join((c.get('headline') or '').split())
-        if len(proposed.split())>4:proposed=''
-        try:title=choose_headline(proposed,topic,headlines,text)
-        except ValueError:title=choose_headline(None,source['text'],headlines,text)
-        from_openai+=title==proposed
-        data['concepts'].append(dict(evidence=source['text'],time=source['start'],end=source['end'],title=title,
-            key_word=c.get('key_word') if title==proposed else None,rationale=c.get('rationale') or '',image_prompt=c.get('image_prompt') or ''))
+        title=valid(c.get('headline'))
+        if title:used.add(title.casefold())
+        titles.append(title)
+        data['concepts'].append(dict(evidence=source['text'],time=source['start'],end=source['end'],
+            key_word=c.get('key_word') if title else None,rationale=c.get('rationale') or '',image_prompt=c.get('image_prompt') or ''))
+    missing=[i for i,t in enumerate(titles) if t is None];retried=0
+    if missing:
+        try:
+            again,usd=moment_picker.rewrite_headlines(topic,[list(STYLES.values())[i] for i in missing],rules,sorted(used))
+            job['cost_usd']['moments']=None if usd is None or job['cost_usd']['moments'] is None else job['cost_usd']['moments']+usd
+        except Exception as error:
+            logging.getLogger(__name__).warning('OpenAI headline retry unavailable (%s); using the topic',type(error).__name__);again=[]
+        for i,headline in zip(missing,again):
+            title=valid(headline)
+            if title:used.add(title.casefold());titles[i]=title;retried+=1
+    built=0
+    for i,title in enumerate(titles):
+        if title is None:titles[i]=topic_headline(topic,used,text);built+=1
+        data['concepts'][i]['title']=titles[i]
     name='OpenAI '+moment_picker.model()
-    data['headline_engine']=name if from_openai==3 else f'{name} ({from_openai} of 3; rest from the topic)'
+    data['headline_engine']=name+(f' ({retried} rewritten, {built} from the topic)' if retried or built else '')
     return data
 
 def openai_speech_words(source,job):

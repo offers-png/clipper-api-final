@@ -43,12 +43,17 @@ class ThumbnailTests(unittest.TestCase):
   pattern=thumb.headline_pattern('question / curiosity composition')
   self.assertTrue(re.fullmatch(pattern,'Who Told It?'));self.assertFalse(re.fullmatch(pattern,'Who Told It'))
   self.assertTrue(re.fullmatch(thumb.headline_pattern('editorial topic reveal'),'Memory Lies'))
- def test_rejected_headline_is_retried_then_falls_back_to_the_quote(self):
+ def test_rejected_headline_is_retried_then_built_from_the_topic_never_a_quote(self):
   used=set();tries=iter(['A Moment of Truth','Why Memory Lies'])
-  self.assertEqual(thumb.choose_headline('A Moment of Truth','Why does this happen?',used,self.SOURCE,retry=lambda n:next(tries)),'Why Memory Lies')
-  self.assertEqual(thumb.choose_headline('Why Memory Lies','Then you saw their face and realized it was their',used,self.SOURCE,retry=lambda n:'Bad'),
-                   'Then You Saw Their Face')
-  self.assertEqual(thumb.fallback_headline('You were halfway through a great story.'),'You Were Halfway')
+  self.assertEqual(thumb.choose_headline('A Moment of Truth','Memory And Stories',used,self.SOURCE,retry=lambda n:next(tries)),'Why Memory Lies')
+  self.assertEqual(thumb.choose_headline('Why Memory Lies','Memory And Stories',used,self.SOURCE,retry=lambda n:'Bad'),'Memory And Stories')
+  self.assertEqual(thumb.choose_headline(None,'Memory And Stories',used,self.SOURCE),'Stories Explained')  # topic taken: a variation
+  self.assertFalse(hasattr(thumb,'fallback_headline'))
+ def test_topic_titles_follow_the_headline_rules(self):
+  self.assertEqual(thumb.topic_headline('memory',set(),self.SOURCE),'Memory Explained')  # one word is too short alone
+  used={'memory explained','inside memory'}
+  self.assertEqual(thumb.topic_headline('Memory',used,self.SOURCE),'Why Memory?')
+  with self.assertRaisesRegex(ValueError,'No video topic'):thumb.topic_headline('',set(),self.SOURCE)
  def test_plan_uses_headlines_for_titles_and_keeps_exact_quotes_as_evidence(self):
   words=[dict(word=w,start=i*.3,end=(i+1)*.3) for i,w in enumerate(self.SOURCE.split())]
   rows=thumb.phrases(words);cut=rows[1]['text']
