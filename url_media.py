@@ -90,8 +90,10 @@ def platform_url(url):
 
 
 # At most 1080p: the best format is often 4K, which takes long to fetch and
-# can pass the size limit mid-download (leaving nothing usable).
-VIDEO_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b'
+# can pass the size limit mid-download (leaving nothing usable). H.264 first:
+# YouTube's default AV1 decodes ~10x slower on CPU (scene detection, renders)
+# and does not play in every browser.
+VIDEO_FORMAT = 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b'
 AUDIO_FORMAT = 'ba/b'
 
 

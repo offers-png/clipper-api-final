@@ -18,6 +18,7 @@ from io import BytesIO
 import json
 
 from clipforge_studios.flags import studios_enabled
+import url_media
 from url_media import MediaError, audio_to_mp3, download, streams
 
 
@@ -109,7 +110,8 @@ class MediaTests(unittest.TestCase):
         real_run = subprocess.run
         def fake_downloader(command, **kwargs):
             if command[1:3] == ['-m', 'yt_dlp']:
-                self.assertIn('bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b', command)  # never 4K
+                self.assertIn(url_media.VIDEO_FORMAT, command)
+                self.assertTrue(url_media.VIDEO_FORMAT.startswith('bv*[height<=1080][vcodec^=avc1]'))  # H.264, never 4K
                 self.assertIn('--ignore-config', command)
                 template = command[command.index('-o')+1]
                 destination = template.replace('%(ext)s', 'mkv')

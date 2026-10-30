@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from . import media, openai_speech
+from . import media, openai_speech, link_media
 from .transcription import MODEL_PATH, transcribe
 
 ROOT = Path(__file__).resolve().parent
@@ -61,6 +61,15 @@ def upload(file: UploadFile = File(...)):
     except Exception:
         source.unlink(missing_ok=True);raise HTTPException(400,'Could not save the uploaded video')
     return transcribe_source(video_id,source,file.filename)
+
+@app.post('/api/videos/url')
+def from_link(body: link_media.Link):
+    """A YouTube, TikTok or Instagram video, downloaded and transcribed like an upload."""
+    if not openai_speech.enabled() and not (MODEL_PATH/'model.bin').is_file():
+        raise HTTPException(503,'Local speech model is missing. Model download requires your approval. No mock transcript will be substituted.')
+    video_id=uuid.uuid4().hex
+    source=link_media.fetch(body.link,Path(media.UPLOAD_DIR)/(video_id+'.mp4'))
+    return transcribe_source(video_id,source,link_media.name(body.link))
 
 def transcribe_source(video_id,source,name):
     """Transcribe a saved video into STORE; the source is deleted if this fails."""

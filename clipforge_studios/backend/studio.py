@@ -14,7 +14,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Literal
-from . import media, studio_ai, studio_render, openai_speech, openai_analysis
+from . import media, studio_ai, studio_render, openai_speech, openai_analysis, link_media
 from .transcription import transcribe
 
 ROOT=Path(__file__).parent
@@ -99,6 +99,9 @@ def _load_source(source_id,existing_loader):
         if not Path(data['source']).is_file():raise ValueError('Source file is missing')
         return data
     return existing_loader(source_id)
+
+
+def _not_found(source_id):raise ValueError('Source not found')
 
 
 def _words(data,job):
@@ -219,19 +222,40 @@ def register(app,existing_loader):
         return dict(ai=ai,transcription=speech,face_detection=vision,categories=studio_ai.CATEGORIES,
             scene_transitions=True,emoji_font=Path('C:/Windows/Fonts/seguiemj.ttf').is_file())
 
+    def register_source(source_id,destination,name):
+        try:
+            info=studio_render.probe(destination)
+            data=dict(id=source_id,studio_source=True,source=str(destination),source_name=name,**info)
+            (SOURCES/(source_id+'.json')).write_text(json.dumps(data),encoding='utf-8')
+            return {k:v for k,v in data.items() if k!='source'}
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(400,'Could not read the uploaded video')
+
     @app.post('/studio/sources')
     def upload(file: UploadFile=File(...)):
         source_id=uuid.uuid4().hex
         destination=SOURCES/(source_id+'.video')
         try:
             with destination.open('wb') as output:shutil.copyfileobj(file.file,output)
-            info=studio_render.probe(destination)
-            data=dict(id=source_id,studio_source=True,source=str(destination),source_name=file.filename,**info)
-            (SOURCES/(source_id+'.json')).write_text(json.dumps(data),encoding='utf-8')
-            return {k:v for k,v in data.items() if k!='source'}
         except Exception:
             destination.unlink(missing_ok=True)
             raise HTTPException(400,'Could not read the uploaded video')
+        return register_source(source_id,destination,file.filename)
+
+    @app.get('/studio/sources/{source_id}/video')
+    def source_video(source_id:str):
+        """The source itself, for previewing a link that was downloaded on the server."""
+        try:data=_load_source(source_id,_not_found)
+        except Exception:raise HTTPException(404)
+        return FileResponse(data['source'],media_type='video/mp4')
+
+    @app.post('/studio/sources/url')
+    def from_link(body:link_media.Link):
+        """A YouTube, TikTok or Instagram video as a source, like an upload (Auto Clips, Thumbnails, Editor clips)."""
+        source_id=uuid.uuid4().hex
+        destination=link_media.fetch(body.link,SOURCES/(source_id+'.video'))
+        return register_source(source_id,destination,link_media.name(body.link))
 
     @app.post('/studio/jobs',status_code=202)
     def generate(body:StudioRequest):

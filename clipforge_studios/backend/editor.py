@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from . import media, studio
+from . import media, studio, link_media
 
 from .resource_paths import DATA
 ROOT=DATA/'editor'
@@ -193,6 +193,17 @@ def register(app):
                     if size>512*1024**2:raise ValueError('Local upload limit is 512 MB')
                     output.write(chunk)
             return save_asset(temp,Path(file.filename or 'Media').name)
+        except Exception as e:raise HTTPException(422,str(e))
+        finally:temp.unlink(missing_ok=True)
+
+    @app.post('/editor/assets/url')
+    def from_link(body:link_media.Link):
+        """A YouTube, TikTok or Instagram video added to the media library, within the upload limit."""
+        temp=link_media.fetch(body.link,ASSETS/(uuid.uuid4().hex+'.upload'))
+        try:
+            if temp.stat().st_size>512*1024**2:raise HTTPException(413,'Local upload limit is 512 MB')
+            return save_asset(temp,link_media.name(body.link))
+        except HTTPException:raise
         except Exception as e:raise HTTPException(422,str(e))
         finally:temp.unlink(missing_ok=True)
 
