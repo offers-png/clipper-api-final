@@ -40,6 +40,11 @@ def subtitle_groups(words,start,end,max_words=5,max_chars=34):
 
 
 EMOJI_FONT=Path('C:/Windows/Fonts/seguiemj.ttf')
+# Bundled (SIL Open Font License): full-color emoji anywhere. libass draws emoji in one color only,
+# so color pop-ups are pictures laid over the video.
+COLOR_EMOJI=Path(__file__).parent/'fonts'/'NotoColorEmoji.ttf'
+LABEL_FONTS=('C:/Windows/Fonts/arialbd.ttf','/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf')
 GREEN,YELLOW='&H005EEFCB&','&H0000E5FF&'
 
 
@@ -59,10 +64,37 @@ def popup_times(groups,popups,duration):
     return sorted(result,key=lambda r:r[0])[:3]
 
 
+def text_size(width,height,box):
+    """Caption size and the pop-up center height for finished clips."""
+    top,bottom=box;big=min(round(width*.083),(height-round(bottom)-30)//2)
+    return big,round(max(big,top-big*.9))
+
+
+def popup_image(label,emoji,size,path):
+    """The pop-up as a picture: the label on a yellow box and a full-color emoji. False without Pillow."""
+    try:from PIL import Image,ImageDraw,ImageFont
+    except ImportError:return False
+    font=next((ImageFont.truetype(f,size) for f in LABEL_FONTS if Path(f).is_file()),None) or ImageFont.load_default(size)
+    ascent,descent=font.getmetrics();text_h=ascent+descent;text_w=round(font.getlength(label));pad=max(8,size//4);gap=max(8,size//3)
+    glyph=None
+    emoji=emoji.replace('\ufe0f','').split('\u200d')[0]  # no shaping engine: the first emoji of a joined sequence
+    if emoji and COLOR_EMOJI.is_file():
+        drawn=Image.new('RGBA',(160,160),(0,0,0,0))
+        ImageDraw.Draw(drawn).text((0,0),emoji,font=ImageFont.truetype(str(COLOR_EMOJI),109),embedded_color=True)  # bitmap size
+        if drawn.getbbox():
+            glyph=drawn.crop(drawn.getbbox());tall=round(text_h*1.1)
+            glyph=glyph.resize((max(1,round(glyph.width*tall/glyph.height)),tall),Image.LANCZOS)
+    inner_h=max(text_h,glyph.height if glyph else 0)
+    image=Image.new('RGBA',(pad*2+text_w+(gap+glyph.width if glyph else 0),pad*2+inner_h),(255,229,0,255))
+    ImageDraw.Draw(image).text((pad,pad+(inner_h-text_h)//2),label,font=font,fill=(16,16,16,255))
+    if glyph:image.alpha_composite(glyph,(pad+text_w+gap,pad+(inner_h-glyph.height)//2))
+    image.save(path);return True
+
+
 def finished_lines(groups,width,height,box,title,keys,popups,duration):
     """Viral-style text: big word-by-word captions under the picture (spoken word green, key words yellow),
     the hook title above it for 3 seconds, then emoji pop-ups above it. Text stays in the bands, off the picture."""
-    top,bottom=box;big=min(round(width*.083),(height-round(bottom)-30)//2)
+    top,bottom=box;big,pop_y=text_size(width,height,box)
     styles=(f'Style: Big,Arial,{big},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(3,big//11)},2,8,30,30,{round(bottom+16)},1\n'
         f'Style: Title,Arial,{round(big*.95)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(3,big//10)},2,8,30,30,{max(24,round(min(top,400)*.15))},1\n'
         f'Style: Pop,Arial,{round(big*.8)},&H00101010,&H00101010,{YELLOW[:-1]},{YELLOW[:-1]},-1,0,0,0,100,100,0,0,3,{max(6,big//6)},0,5,30,30,0,1\n')
@@ -82,7 +114,7 @@ def finished_lines(groups,width,height,box,title,keys,popups,duration):
     for at,popup in popup_times(groups,popups,duration):
         glyph=f' {{\\fnSegoe UI Emoji}}{popup["emoji"]}' if popup['emoji'] and EMOJI_FONT.is_file() else ''
         lines.append(f'Dialogue: 3,{ass_time(at)},{ass_time(min(duration,at+1.8))},Pop,,0,0,0,,'
-            f'{{\\pos({width//2},{round(max(big,top-big*.9))})\\fad(60,180){pop_in}}}{clean(popup["label"])}{glyph}')
+            f'{{\\pos({width//2},{pop_y})\\fad(60,180){pop_in}}}{clean(popup["label"])}{glyph}')
     return styles,lines
 
 
@@ -245,12 +277,29 @@ def render(source,clip,folder,options,words,analysis,progress):
         if options.hooks and not hook:warnings.append('No AI hook title was available; none was invented.')
         finish=dict(box=picture_box(plan,meta),title=hook,keys={key(w) for w in analysis.get('key_words',[])},
             popups=analysis.get('popups',[]),duration=duration)
-        if analysis.get('popups') and not EMOJI_FONT.is_file():warnings.append('No compatible emoji font was found; pop-ups show text only.')
         emoji=''  # the pop-ups carry the emoji
+    pops=popup_times(groups,finish['popups'],duration) if finish else []
+    overlays=[]  # (picture, seconds): full-color pop-ups; the caption file draws them only without Pillow
+    if pops:
+        big,pop_y=text_size(plan['width'],plan['height'],finish['box'])
+        for number,(at,popup) in enumerate(pops,1):
+            picture=folder/f'popup_{number}.png'
+            if popup_image(popup['label'],popup['emoji'],round(big*.75),picture):overlays.append((picture,at))
+        if overlays:finish['popups']=[]
+        elif any(p['emoji'] for _,p in pops) and not EMOJI_FONT.is_file():warnings.append('No compatible emoji font was found; pop-ups show text only.')
     write_captions(folder,groups,plan['width'],plan['height'],options.animated,hook,context,emoji,finish)
     if groups or hook or context or emoji:vf.append('ass=captions.ass')
-    command=['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',f'{start:.6f}','-i',str(source),
-        '-t',f'{duration:.6f}','-map','0:v:0','-map','0:a:0?', '-vf',','.join(vf),
+    video=['-map','0:v:0','-map','0:a:0?','-vf',','.join(vf)];pictures=[]
+    if overlays:
+        graph=f"[0:v:0]{','.join(vf)}[v0]"
+        for number,(picture,at) in enumerate(overlays,1):
+            until=min(duration,at+1.8)
+            pictures+=['-loop','1','-t',f'{duration:.6f}','-i',picture.name]
+            graph+=(f";[{number}:v]format=rgba,fade=t=in:st={at:.3f}:d=0.12:alpha=1,fade=t=out:st={until-.18:.3f}:d=0.18:alpha=1[p{number}]"
+                f";[v{number-1}][p{number}]overlay=x=(W-w)/2:y={pop_y}-h/2:enable='between(t,{at:.3f},{until:.3f})'[v{number}]")
+        video=['-filter_complex',graph,'-map',f'[v{len(overlays)}]','-map','0:a:0?']
+    command=['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',f'{start:.6f}','-i',str(source),*pictures,
+        '-t',f'{duration:.6f}',*video,
         '-c:v','libx264','-preset','veryfast','-crf','22','-pix_fmt','yuv420p',
         '-c:a','aac','-b:a','160k','-movflags','+faststart','-progress','pipe:1','clip.mp4']
     with (folder/'render.log').open('w',encoding='utf-8') as log:
@@ -274,5 +323,5 @@ def render(source,clip,folder,options,words,analysis,progress):
         if code:warnings.append('Thumbnail generation failed')
     return dict(**clip,actual_duration=actual['duration'],width=actual['width'],height=actual['height'],
         hook=hook,context=context,emoji=emoji,framing=plan,warnings=warnings,
-        popups=[dict(at=round(at,2),**p) for at,p in popup_times(groups,finish['popups'],duration)] if finish else [],
+        popups=[dict(at=round(at,2),**p) for at,p in pops],
         caption_groups=len(groups),caption_words=sum(len(g) for g in groups),analysis=analysis)

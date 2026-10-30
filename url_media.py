@@ -1,6 +1,8 @@
 """Download public media and validate it before invoking transcription.
 
-Never loads browser cookies or emits downloader diagnostics containing private URLs.
+Never emits downloader diagnostics containing private URLs. Browser cookies are used only to retry
+a YouTube link that asks for sign-in or bot confirmation (CLIPFORGE_YTDLP_COOKIES_BROWSER, default
+chrome; empty turns it off).
 """
 import ipaddress
 import json
@@ -84,6 +86,36 @@ def check_media_limits(path, max_bytes, max_seconds):
         raise MediaTooLarge(length_message(max_seconds))
 
 
+YOUTUBE_BLOCKED = 'YouTube blocked this link. Download the video and upload the file instead.'
+
+
+def update_downloader():
+    """Install the newest yt-dlp: YouTube changes often and older versions stop working. Runs at backend
+    start (CLIPFORGE_YTDLP_AUTO_UPDATE=0 turns it off); yt-dlp runs as its own process, so later downloads
+    use the new version at once. A failed update keeps the installed one."""
+    if os.getenv('CLIPFORGE_YTDLP_AUTO_UPDATE', '1') == '0':
+        return False
+    try:
+        result = subprocess.run([sys.executable, '-m', 'pip', 'install', '--upgrade', '--quiet',
+                                 '--disable-pip-version-check', 'yt-dlp'], capture_output=True, text=True, timeout=300)
+    except (subprocess.SubprocessError, OSError) as error:
+        logging.getLogger(__name__).warning('yt-dlp update failed: %s', type(error).__name__)
+        return False
+    from importlib.metadata import version
+    logging.getLogger(__name__).warning('yt-dlp update %s; now %s', 'failed' if result.returncode else 'done', version('yt-dlp'))
+    return not result.returncode
+
+
+def youtube_url(url):
+    host = (urlparse(url).hostname or '').lower()
+    return any(host == domain or host.endswith('.' + domain) for domain in ('youtube.com', 'youtu.be'))
+
+
+def needs_sign_in(error):
+    """YouTube's 'Sign in to confirm you're not a bot' (and other sign-in/login demands)."""
+    return any(text in error for text in ('sign in', 'not a bot', 'login', 'cookies'))
+
+
 def platform_url(url):
     host=(urlparse(url).hostname or '').lower()
     return any(host == domain or host.endswith('.' + domain) for domain in PLATFORMS)
@@ -105,14 +137,20 @@ def platform_download(url, root, max_bytes=None, max_seconds=None, audio_only=Fa
         limits += ['--max-filesize', str(max_bytes)]
     if max_seconds:
         limits += ['--match-filter', f'duration <=? {int(max_seconds)}']
-    result = subprocess.run([
-        sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
-        '--no-progress', '--no-simulate', '--socket-timeout', '30',
-        '--retries', '2', '--fragment-retries', '2',
-        '-f', AUDIO_FORMAT if audio_only else VIDEO_FORMAT, '--merge-output-format', 'mp4', *limits,
-        '-o', str(root / 'source.%(ext)s'), '--print', 'after_move:filepath',
-        '--', url.strip(),
-    ], capture_output=True, text=True, timeout=900)
+    def run(*extra):
+        return subprocess.run([
+            sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
+            '--no-progress', '--no-simulate', '--socket-timeout', '30',
+            '--retries', '2', '--fragment-retries', '2', *extra,
+            '-f', AUDIO_FORMAT if audio_only else VIDEO_FORMAT, '--merge-output-format', 'mp4', *limits,
+            '-o', str(root / 'source.%(ext)s'), '--print', 'after_move:filepath',
+            '--', url.strip(),
+        ], capture_output=True, text=True, timeout=900)
+    result = run()
+    browser = os.getenv('CLIPFORGE_YTDLP_COOKIES_BROWSER', 'chrome').strip()
+    if result.returncode and youtube_url(url) and browser and needs_sign_in((result.stderr or '').lower()):
+        logging.getLogger(__name__).info('YouTube asked for sign-in; retrying with %s cookies', browser)
+        result = run('--cookies-from-browser', browser)
     skipped = ((result.stdout or '') + (result.stderr or '')).lower()
     if not result.returncode and not result.stdout.strip():
         if max_seconds and 'does not pass filter' in skipped:
@@ -122,6 +160,8 @@ def platform_download(url, root, max_bytes=None, max_seconds=None, audio_only=Fa
     if result.returncode:
         # Inspect diagnostic categories without exposing arbitrary stderr or URLs.
         error=(result.stderr or '').lower()
+        if youtube_url(url) and 'timed out' not in error and 'timeout' not in error:
+            raise MediaError(YOUTUBE_BLOCKED)
         if 'ip address is blocked' in error or 'http error 403' in error:
             raise MediaError('The video host blocked this server or network (HTTP 403/IP restriction). Upload the video file instead.')
         if 'login' in error or 'sign in' in error:

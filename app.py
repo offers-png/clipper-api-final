@@ -813,6 +813,13 @@ async def save_ai_insights(
     return await update_own_record(request, record_id, dict(
         hooks=hooks, hashtags=hashtags, summary=summary, titles=titles, final_url=final_url))
 
+@app.on_event("startup")
+def update_video_downloader():
+    """Newest yt-dlp on every start, in the background so the server is ready at once."""
+    import threading, url_media
+    threading.Thread(target=url_media.update_downloader, daemon=True).start()
+
+
 # Additive opt-in local Studios; disabled unless explicitly configured.
 if studios_enabled():
     from clipforge_studios.install import install as install_studios

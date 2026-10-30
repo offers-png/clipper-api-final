@@ -78,6 +78,18 @@ class FinishingTests(unittest.TestCase):
     def test_unspoken_popups_are_skipped(self):
         self.assertEqual(popup_times(self.groups, [dict(quote='cheese burger', label='X', emoji='')], 10), [])
 
+    def test_popup_picture_has_a_full_color_emoji(self):
+        from PIL import Image
+        from clipforge_studios.backend.studio_render import COLOR_EMOJI, popup_image
+        self.assertTrue(COLOR_EMOJI.is_file())  # bundled, so it works on any server
+        self.assertTrue(popup_image('NICE SAUCE', '🍕', 45, self.folder / 'pop.png'))
+        colors = Image.open(self.folder / 'pop.png').convert('RGB').getcolors(1 << 20)
+        orange = sum(n for n, (r, g, b) in colors if r > 200 and 60 < g < 170 and b < 90)  # pizza crust and pepperoni
+        self.assertGreater(orange, 50)
+        with_text_only = Image.open(self.folder / 'pop.png').width
+        popup_image('NICE SAUCE', '', 45, self.folder / 'plain.png')
+        self.assertGreater(with_text_only, Image.open(self.folder / 'plain.png').width)
+
     def test_picture_box_for_wide_video_in_vertical_output(self):
         plan = dict(content_box=[0, 250, 720, 840], mode='safe-fit')
         self.assertEqual(picture_box(plan, dict(width=1920, height=1080)), (467.5, 872.5))
