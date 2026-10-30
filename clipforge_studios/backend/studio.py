@@ -39,11 +39,13 @@ class Enhancements(BaseModel):
     crop: Literal['fit','face']='fit'
     thumbnail: bool=True
     emoji: bool=False
+    # Viral-style finish: big word-by-word captions, an AI hook title and emoji pop-ups (turns on the four above).
+    finishing: bool=False
 
 
 class StudioRequest(BaseModel):
     source_id: str
-    mode: Literal['full','highlights']='full'
+    mode: Literal['full','even','highlights']='full'
     duration: float=Field(default=30,ge=1,le=3600,allow_inf_nan=False)
     category: Literal['best','funny','speech','educational','motivational','emotional','viral','important']='best'
     count: int=Field(default=3,ge=1,le=100)
@@ -54,6 +56,17 @@ def full_ranges(duration,target):
     if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid source duration')
     if math.ceil(duration/target)>1000:raise ValueError('More than 1,000 clips requested. Choose a longer duration; no footage has been discarded.')
     return [dict(start=i*target,end=min(duration,(i+1)*target)) for i in range(math.ceil(duration/target))]
+
+
+def even_ranges(duration,length,count):
+    """count clips of length seconds, each centered in an equal part of the video: 60 s x 10 on a
+    10-minute video is the whole video in pieces; 30 s x 10 is one clip from every minute."""
+    if not math.isfinite(duration) or duration<=0:raise ValueError('Invalid source duration')
+    if length*count>duration+1:
+        raise ValueError(f'{count} clips x {length:g} seconds = {length*count:g} seconds, which is longer than this video '
+            f'({duration:.0f} seconds). Choose fewer clips or a shorter length.')
+    length=min(length,duration/count);slot=duration/count  # up to a second over: trim each clip slightly
+    return [dict(start=i*slot+(slot-length)/2,end=i*slot+(slot+length)/2) for i in range(count)]
 
 
 def candidate_ranges(words,target):
@@ -154,21 +167,26 @@ def _worker(job,body,data):
     try:
         update(job,status='running',stage='Inspecting source',progress=.02)
         opts=body.enhancements
-        needs_ai=body.mode=='highlights' or opts.hooks or opts.context or opts.emoji
         # With a key, OpenAI scores clips; the local model is the no-key path.
         cloud=openai_speech.enabled()
+        if opts.finishing:
+            ai_ready=cloud or studio_ai.status()['ready']
+            opts=opts.model_copy(update=dict(subtitles=True,animated=True,hooks=ai_ready,emoji=ai_ready))
+            if not ai_ready:job['warnings'].append('The hook title and emoji pop-ups need OPENAI_API_KEY or the local analysis model; captions were still added.')
+            elif not cloud:job['warnings'].append('The local model quotes the transcript for the hook; AI-written hook titles and pop-ups need OPENAI_API_KEY.')
+        needs_ai=body.mode=='highlights' or opts.hooks or opts.context or opts.emoji
         if needs_ai and not cloud and not studio_ai.status()['ready']:
             raise ValueError('Local content-analysis model is not installed. Turn off AI hooks/context/emoji and use Full Video, or approve/install the local model. No mock analysis is substituted.')
         def analyse(options,limit=None):
             progress=lambda fraction:update(job,progress=.12+.06*fraction)
             if not cloud:return studio_ai.analyse(options,body.category,progress)
-            items,usd=openai_analysis.analyse(options,body.category,progress,limit)
+            items,usd=openai_analysis.analyse(options,body.category,progress,limit,finish=opts.finishing)
             job.setdefault('cost_usd',{})['analysis']=usd;return items
         engine='OpenAI '+openai_analysis.model() if cloud else 'local AI'
         words=_words(data,job) if needs_ai or opts.subtitles or opts.animated else []
         analyses={}
-        if body.mode=='full':
-            clips=full_ranges(data['duration'],body.duration)
+        if body.mode in ('full','even'):
+            clips=full_ranges(data['duration'],body.duration) if body.mode=='full' else even_ranges(data['duration'],body.duration,body.count)
             for i,c in enumerate(clips):
                 c.update(id=i,text=' '.join(w['word'] for w in words if w['end']>c['start'] and w['start']<c['end']))
             if needs_ai:
@@ -202,7 +220,7 @@ def _worker(job,body,data):
             items.append(rendered)
             update(job,items=list(items))
         update(job,stage='Packaging batch download',progress=.97)
-        manifest=dict(mode=body.mode,source_duration=data['duration'],target_duration=body.duration,
+        manifest=dict(mode=body.mode,finishing=opts.finishing,source_duration=data['duration'],target_duration=body.duration,
             category=body.category if body.mode=='highlights' else None,items=items,
             transcription_engine=job.get('transcription_engine') if words else None)
         (output/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
@@ -214,7 +232,8 @@ def _worker(job,body,data):
         coverage=dict(start=0,end=data['duration'],duration=sum(c['end']-c['start'] for c in clips),
             complete=True,remainder=clips[-1]['end']-clips[-1]['start']) if body.mode=='full' else None
         update(job,status='completed',stage='Ready',progress=1,items=items,coverage=coverage,
-            zip_url=f'/studio/jobs/{job["id"]}/zip',message=f'{len(items)} clips ready. '+('Entire source covered, including the final remainder.' if body.mode=='full' else 'AI-selected transcript highlights; not full source coverage.'))
+            zip_url=f'/studio/jobs/{job["id"]}/zip',message=f'{len(items)} clips ready. '+{'full':'Entire source covered, including the final remainder.',
+                'even':f'{len(items)} x {clips[0]["end"]-clips[0]["start"]:.1f} seconds, spread evenly across the video.'}.get(body.mode,'AI-selected transcript highlights; not full source coverage.'))
     except Exception as error:
         logging.exception('Local Studio job failed')
         update(job,status='failed',stage='Stopped',error=str(error),message='Job stopped. Partial results, if any, remain available; no completion was claimed.')
@@ -278,8 +297,8 @@ def register(app,existing_loader):
             raise HTTPException(503,'Local text-analysis model is not installed. AI Highlights/hooks/context/emoji require approval and a local model; Full Video works without it.')
         try:data=_load_source(body.source_id,existing_loader)
         except Exception:raise HTTPException(404,'Source not found. Upload it again.')
-        if body.mode=='full':
-            try:full_ranges(data['duration'],body.duration)
+        if body.mode in ('full','even'):
+            try:full_ranges(data['duration'],body.duration) if body.mode=='full' else even_ranges(data['duration'],body.duration,body.count)
             except ValueError as error:raise HTTPException(422,str(error))
         job=dict(id=uuid.uuid4().hex,status='queued',stage='Queued',progress=0,items=[],warnings=[],
             created=time.time(),request=body.model_dump(),source_name=data.get('source_name','Video'),source_duration=data['duration'])

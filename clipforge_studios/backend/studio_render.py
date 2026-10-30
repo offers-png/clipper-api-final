@@ -26,12 +26,12 @@ def clean(text):
     return str(text).replace('\\',' ').replace('{','(').replace('}',')').replace('\n',' ')
 
 
-def subtitle_groups(words,start,end):
+def subtitle_groups(words,start,end,max_words=5,max_chars=34):
     groups=[];group=[]
     for word in words:
         if word['end']<=start or word['start']>=end:continue
         item=dict(word=word['word'],start=max(0,word['start']-start),end=min(end-start,word['end']-start))
-        if group and (len(group)>=5 or sum(len(w['word'])+1 for w in group)+len(item['word'])>34 or item['start']-group[-1]['end']>.55):
+        if group and (len(group)>=max_words or sum(len(w['word'])+1 for w in group)+len(item['word'])>max_chars or item['start']-group[-1]['end']>.55):
             groups.append(group);group=[]
         group.append(item)
         if re.search(r'[.!?]$',item['word']):groups.append(group);group=[]
@@ -39,7 +39,54 @@ def subtitle_groups(words,start,end):
     return groups
 
 
-def write_captions(folder,groups,width,height,animated,hook='',context='',emoji=''):
+EMOJI_FONT=Path('C:/Windows/Fonts/seguiemj.ttf')
+GREEN,YELLOW='&H005EEFCB&','&H0000E5FF&'
+
+
+def key(word):return re.sub(r"[^\w']",'',word.casefold())
+
+
+def popup_times(groups,popups,duration):
+    """(seconds, popup) for each pop-up phrase at the moment it is said: after the 3-second hook title,
+    at least 2.2 seconds apart, at most 3."""
+    spoken=[w for g in groups for w in g];tokens=[key(w['word']) for w in spoken];result=[]
+    for popup in popups:
+        quote=[key(w) for w in popup['quote'].split() if key(w)]
+        at=next((spoken[i]['start'] for i in range(len(tokens)-len(quote)+1) if quote and tokens[i:i+len(quote)]==quote),None)
+        if at is None:continue
+        at=max(at,3.0)
+        if at+1.2<=duration and all(abs(at-t)>=2.2 for t,_ in result):result.append((at,popup))
+    return sorted(result,key=lambda r:r[0])[:3]
+
+
+def finished_lines(groups,width,height,box,title,keys,popups,duration):
+    """Viral-style text: big word-by-word captions under the picture (spoken word green, key words yellow),
+    the hook title above it for 3 seconds, then emoji pop-ups above it. Text stays in the bands, off the picture."""
+    top,bottom=box;big=min(round(width*.083),(height-round(bottom)-30)//2)
+    styles=(f'Style: Big,Arial,{big},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(3,big//11)},2,8,30,30,{round(bottom+16)},1\n'
+        f'Style: Title,Arial,{round(big*.95)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(3,big//10)},2,8,30,30,{max(24,round(min(top,400)*.15))},1\n'
+        f'Style: Pop,Arial,{round(big*.8)},&H00101010,&H00101010,{YELLOW[:-1]},{YELLOW[:-1]},-1,0,0,0,100,100,0,0,3,{max(6,big//6)},0,5,30,30,0,1\n')
+    lines=[]
+    for group in groups:
+        words=[clean(w['word']).upper() for w in group]
+        def colored(active):
+            return ' '.join(('{\\c'+GREEN+'\\fscx112\\fscy112}'+word+'{\\rBig}') if i==active
+                else ('{\\c'+YELLOW+'}'+word+'{\\rBig}') if key(group[i]['word']) in keys else word for i,word in enumerate(words))
+        cursor=group[0]['start']
+        for i,w in enumerate(group):
+            if w['start']>cursor:lines.append(f'Dialogue: 0,{ass_time(cursor)},{ass_time(w["start"])},Big,,0,0,0,,{colored(-1)}')
+            lines.append(f'Dialogue: 1,{ass_time(w["start"])},{ass_time(w["end"])},Big,,0,0,0,,{colored(i)}')
+            cursor=w['end']
+    pop_in='\\fscx60\\fscy60\\t(0,120,\\fscx110\\fscy110)\\t(120,220,\\fscx100\\fscy100)'
+    if title:lines.append(f'Dialogue: 2,0:00:00.00,{ass_time(min(3,duration))},Title,,0,0,0,,{{\\fad(0,200){pop_in}}}{clean(title)}')
+    for at,popup in popup_times(groups,popups,duration):
+        glyph=f' {{\\fnSegoe UI Emoji}}{popup["emoji"]}' if popup['emoji'] and EMOJI_FONT.is_file() else ''
+        lines.append(f'Dialogue: 3,{ass_time(at)},{ass_time(min(duration,at+1.8))},Pop,,0,0,0,,'
+            f'{{\\pos({width//2},{round(max(big,top-big*.9))})\\fad(60,180){pop_in}}}{clean(popup["label"])}{glyph}')
+    return styles,lines
+
+
+def write_captions(folder,groups,width,height,animated,hook='',context='',emoji='',finish=None):
     fontsize=38 if width==720 else 30
     header=f'''[Script Info]
 ScriptType: v4.00+
@@ -56,10 +103,14 @@ Style: Context,Arial,{max(22,fontsize-10)},&H00DBE9ED,&H00FFFFFF,&H00101010,&H80
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     lines=[];srt=[];word_rows=[]
+    if finish:
+        styles,lines=finished_lines(groups,width,height,**finish)
+        header=header.replace('[Events]',styles+'[Events]')
     for number,group in enumerate(groups,1):
         text=' '.join(clean(w['word']) for w in group)
         a,b=group[0]['start'],group[-1]['end']
-        if animated:
+        if finish:pass
+        elif animated:
             cursor=a
             for index,w in enumerate(group):
                 if w['start']>cursor:
@@ -74,7 +125,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             n=round(x*1000);return f'{n//3600000:02d}:{n//60000%60:02d}:{n//1000%60:02d},{n%1000:03d}'
         srt.append(f'{number}\n{stamp(a)} --> {stamp(b)}\n{text}\n')
         word_rows.extend(group)
-    if hook:lines.append(f'Dialogue: 2,0:00:00.00,0:00:04.00,Hook,,0,0,0,,{clean(hook)}')
+    if hook and not finish:lines.append(f'Dialogue: 2,0:00:00.00,0:00:04.00,Hook,,0,0,0,,{clean(hook)}')
     if context:lines.append(f'Dialogue: 2,0:00:00.00,0:00:06.00,Context,,0,0,0,,{clean(context)}')
     if emoji:
         glyph={'idea':'💡','laugh':'😂','heart':'❤','fire':'🔥','pin':'📌'}.get(emoji,'')
@@ -152,13 +203,22 @@ def scene_times(source,start,end):
     return found[:100]
 
 
+def picture_box(plan,meta):
+    """Top and bottom of the actual picture inside the content area, so finishing text can sit around it."""
+    _,y,w,h=plan['content_box']
+    source_w,source_h=(plan['crop_box'][2],plan['crop_box'][3]) if 'crop_box' in plan else (meta['width'],meta['height'])
+    shown=h if plan.get('zoom') else min(h,source_h*w/source_w)
+    return y+(h-shown)/2,y+(h+shown)/2
+
+
 def render(source,clip,folder,options,words,analysis,progress):
     folder.mkdir(parents=True,exist_ok=True)
     meta=probe(source)
     start,end=clip['start'],clip['end'];duration=end-start
-    groups=subtitle_groups(words,start,end) if options.subtitles or options.animated else []
+    finishing=getattr(options,'finishing',False)
+    groups=subtitle_groups(words,start,end,*((3,18) if finishing else ())) if options.subtitles or options.animated else []
     vf,plan,warnings=framing(source,start,end,options,meta)
-    if not options.vertical and not any((options.subtitles,options.animated,options.hooks,options.context,options.emoji)):
+    if not options.vertical and not any((options.subtitles,options.animated,options.hooks,options.context,options.emoji,finishing)):
         vf=['scale=trunc(iw/2)*2:trunc(ih/2)*2','setsar=1']
         plan.update(mode='original',width=meta['width'],height=meta['height'])
     if options.transitions:
@@ -173,12 +233,21 @@ def render(source,clip,folder,options,words,analysis,progress):
     hook=analysis.get('hook','') if options.hooks else ''
     context=analysis.get('context','') if options.context else ''
     emoji=analysis.get('emoji','') if options.emoji else ''
-    if emoji and not Path('C:/Windows/Fonts/seguiemj.ttf').is_file():
+    if emoji and not EMOJI_FONT.is_file():
         warnings.append('No compatible emoji font was found; emoji overlay was skipped rather than rendering a missing glyph.')
         emoji=''
-    if options.hooks and not hook:warnings.append('No grounded AI hook was available; no hook text was invented.')
+    if options.hooks and not hook and not finishing:warnings.append('No grounded AI hook was available; no hook text was invented.')
     if options.context and not context:warnings.append('No grounded AI context quote was available; no context was invented.')
-    write_captions(folder,groups,plan['width'],plan['height'],options.animated,hook,context,emoji)
+    finish=None
+    if finishing:
+        quote=hook if len(hook.split())<=6 else ''  # the local model's grounded quote, when it is short enough
+        hook=analysis.get('title') or quote.upper()
+        if options.hooks and not hook:warnings.append('No AI hook title was available; none was invented.')
+        finish=dict(box=picture_box(plan,meta),title=hook,keys={key(w) for w in analysis.get('key_words',[])},
+            popups=analysis.get('popups',[]),duration=duration)
+        if analysis.get('popups') and not EMOJI_FONT.is_file():warnings.append('No compatible emoji font was found; pop-ups show text only.')
+        emoji=''  # the pop-ups carry the emoji
+    write_captions(folder,groups,plan['width'],plan['height'],options.animated,hook,context,emoji,finish)
     if groups or hook or context or emoji:vf.append('ass=captions.ass')
     command=['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',f'{start:.6f}','-i',str(source),
         '-t',f'{duration:.6f}','-map','0:v:0','-map','0:a:0?', '-vf',','.join(vf),
@@ -205,4 +274,5 @@ def render(source,clip,folder,options,words,analysis,progress):
         if code:warnings.append('Thumbnail generation failed')
     return dict(**clip,actual_duration=actual['duration'],width=actual['width'],height=actual['height'],
         hook=hook,context=context,emoji=emoji,framing=plan,warnings=warnings,
+        popups=[dict(at=round(at,2),**p) for at,p in popup_times(groups,finish['popups'],duration)] if finish else [],
         caption_groups=len(groups),caption_words=sum(len(g) for g in groups),analysis=analysis)
