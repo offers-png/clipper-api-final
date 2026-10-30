@@ -83,12 +83,14 @@ class FinishingTests(unittest.TestCase):
         from clipforge_studios.backend.studio_render import COLOR_EMOJI, popup_image
         self.assertTrue(COLOR_EMOJI.is_file())  # bundled, so it works on any server
         self.assertTrue(popup_image('NICE SAUCE', '🍕', 45, self.folder / 'pop.png'))
-        colors = Image.open(self.folder / 'pop.png').convert('RGB').getcolors(1 << 20)
+        with Image.open(self.folder / 'pop.png') as pop:
+            colors = pop.convert('RGB').getcolors(1 << 20)
+            with_text_only = pop.width
         orange = sum(n for n, (r, g, b) in colors if r > 200 and 60 < g < 170 and b < 90)  # pizza crust and pepperoni
         self.assertGreater(orange, 50)
-        with_text_only = Image.open(self.folder / 'pop.png').width
         popup_image('NICE SAUCE', '', 45, self.folder / 'plain.png')
-        self.assertGreater(with_text_only, Image.open(self.folder / 'plain.png').width)
+        with Image.open(self.folder / 'plain.png') as plain:
+            self.assertGreater(with_text_only, plain.width)
 
     def test_picture_box_for_wide_video_in_vertical_output(self):
         plan = dict(content_box=[0, 250, 720, 840], mode='safe-fit')

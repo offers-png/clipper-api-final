@@ -1,6 +1,7 @@
 """Additive, offline timeline editor. All media paths are server-owned IDs."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import mimetypes
 from pathlib import Path
 import re
 import shutil
@@ -20,6 +21,9 @@ for p in (ASSETS,JOBS):p.mkdir(parents=True,exist_ok=True)
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='timeline-render')
 STATE={}; STATE_LOCK=threading.Lock()
 SIZES={'16:9':(1280,720),'9:16':(720,1280),'1:1':(720,720)}
+# Text fonts offered in the editor; the browser preview uses the same family names.
+FONTS={'Arial':'arial.ttf','Impact':'impact.ttf','Georgia':'georgia.ttf','Verdana':'verdana.ttf','Courier New':'cour.ttf'}
+FRAMES=ASSETS/'frames';FRAMES.mkdir(exist_ok=True)
 
 def probe(path):
     r=subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],capture_output=True,text=True,timeout=30)
@@ -90,6 +94,7 @@ class Text(BaseModel):
     y:int=Field(default=550,ge=0,le=1280)
     size:int=Field(default=38,ge=12,le=150)
     color:str=Field(default='#ffffff',pattern='^#[0-9a-fA-F]{6}$')
+    font:Literal['Arial','Impact','Georgia','Verdana','Courier New']='Arial'
 class Timeline(BaseModel):
     segments:list[Segment]=Field(min_length=1,max_length=30)
     tracks:list[Track]=Field(default_factory=list,max_length=12)
@@ -123,6 +128,46 @@ def validate(body):
         if asset(o.asset_id)['kind']!='image':raise ValueError('Image overlay requires an image asset')
     return total
 
+EMOJI_FONT=Path(__file__).parent/'fonts'/'NotoColorEmoji.ttf'
+
+def is_emoji(ch):
+    o=ord(ch);return o>=0x1F000 or 0x2600<=o<=0x27BF or 0x2B00<=o<=0x2BFF
+
+def text_image(t,path):
+    """The text as a picture, drawn like the browser preview: font, size and color on a black 45% box with an
+    8px border, top-left text at x,y, and full-color emoji (drawtext can't draw emoji). False without Pillow or the
+    font file; drawtext is used then."""
+    try:from PIL import Image,ImageDraw,ImageFont
+    except ImportError:return False
+    file=Path('C:/Windows/Fonts')/FONTS[t.font]
+    if not file.is_file():return False
+    font=ImageFont.truetype(str(file),t.size);ascent,descent=font.getmetrics();line=ascent+descent
+    emoji=ImageFont.truetype(str(EMOJI_FONT),109) if EMOJI_FONT.is_file() else None  # bitmap size
+    tall=round(line*.95);gap=round(t.size*.08)
+    def glyph(ch):
+        drawn=Image.new('RGBA',(160,160));ImageDraw.Draw(drawn).text((0,0),ch,font=emoji,embedded_color=True)
+        if not drawn.getbbox():return None
+        g=drawn.crop(drawn.getbbox());return g.resize((max(1,round(g.width*tall/g.height)),tall),Image.LANCZOS)
+    lines=[]
+    for raw in t.text.split('\n'):
+        pieces=[];joined=False
+        for ch in raw.replace('\ufe0f',''):
+            if ch=='\u200d':joined=True;continue
+            if joined:joined=False;continue  # no shaping engine: the first emoji of a joined sequence
+            if emoji and is_emoji(ch):pieces.append(glyph(ch))
+            elif pieces and isinstance(pieces[-1],str):pieces[-1]+=ch
+            else:pieces.append(ch)
+        lines.append([p for p in pieces if p is not None])
+    width=lambda pieces:sum(font.getlength(p) if isinstance(p,str) else p.width+gap for p in pieces)
+    image=Image.new('RGBA',(max([round(width(p)) for p in lines]+[1])+16,line*len(lines)+16),(0,0,0,115))
+    draw=ImageDraw.Draw(image)
+    for row,pieces in enumerate(lines):
+        x,y=8,8+row*line
+        for p in pieces:
+            if isinstance(p,str):draw.text((x,y),p,font=font,fill=t.color);x+=font.getlength(p)
+            else:image.alpha_composite(p,(round(x),y+(line-tall)//2));x+=p.width+gap
+    image.save(path);return True
+
 def run(args,cwd):
     r=subprocess.run(['ffmpeg','-v','error','-y',*args],cwd=cwd,capture_output=True,text=True,timeout=900)
     if r.returncode:raise RuntimeError('FFmpeg could not render: '+r.stderr[-1800:])
@@ -153,8 +198,14 @@ def render(job,body):
             filters.append(f'[{v}][ov{n}]overlay=x={o.x}:y={o.y}:enable=\'between(t,{o.start},{o.end})\':eof_action=repeat[v{n}]')
             v=f'v{n}';idx+=1
         for n,t in enumerate(body.texts):
+            if text_image(t,folder/f'text_{n}.png'):  # as the preview draws it, emoji included
+                args+=['-loop','1','-framerate','30','-i',f'text_{n}.png']
+                filters.append(f'[{idx}:v]format=rgba[tx{n}]')
+                filters.append(f"[{v}][tx{n}]overlay=x={t.x-8}:y={t.y-8}:enable='between(t,{t.start},{t.end})':eof_action=repeat[txt{n}]")
+                v=f'txt{n}';idx+=1;continue
             (folder/f'text_{n}.txt').write_text(t.text,encoding='utf-8')
-            font="fontfile='C\\:/Windows/Fonts/arial.ttf'" if Path('C:/Windows/Fonts/arial.ttf').is_file() else "font=Arial"
+            file=FONTS[t.font]
+            font=f"fontfile='C\\:/Windows/Fonts/{file}'" if Path('C:/Windows/Fonts',file).is_file() else f"font='{t.font}'"
             filters.append(f"[{v}]drawtext={font}:textfile=text_{n}.txt:expansion=none:fontsize={t.size}:fontcolor={t.color}:x={t.x}:y={t.y}:box=1:boxcolor=black@0.45:boxborderw=8:enable='between(t,{t.start},{t.end})'[txt{n}]")
             v=f'txt{n}'
         if body.fade_in:filters.append(f'[{v}]fade=t=in:st=0:d={body.fade_in}[fi]');v='fi'
@@ -217,8 +268,23 @@ def register(app):
     def get_asset(asset_id:str):
         try:a=asset(asset_id)
         except Exception:raise HTTPException(404)
-        mime={'png':'image/png','mjpeg':'image/jpeg','webp':'image/webp'}.get(a.get('codec'),'application/octet-stream') if a['kind']=='image' else 'application/octet-stream' if a['kind']=='audio' else 'video/mp4'
+        mime={'png':'image/png','mjpeg':'image/jpeg','webp':'image/webp'}.get(a.get('codec'),'application/octet-stream') if a['kind']=='image' \
+            else (mimetypes.guess_type(a.get('name',''))[0] or 'audio/mpeg') if a['kind']=='audio' else 'video/mp4'  # the preview plays audio too
         return FileResponse(a['path'],media_type=mime)
+
+    @app.get('/editor/assets/{asset_id}/frame')
+    def frame(asset_id:str,t:float=0,h:int=72):
+        """One small video frame for the timeline's thumbnail strips (cached)."""
+        try:a=asset(asset_id)
+        except Exception:raise HTTPException(404)
+        if a['kind']!='video' or not 24<=h<=240:raise HTTPException(404)
+        t=round(min(max(0,t),max(0,a['duration']-.5)),1)  # the last frames can be missing
+        target=FRAMES/f'{asset_id}_{round(t*10)}_{h}.jpg'
+        if not target.is_file():
+            r=subprocess.run(['ffmpeg','-v','error','-y','-ss',str(t),'-i',a['path'],'-frames:v','1','-vf',f'scale=-2:{h}','-q:v','5',str(target)],
+                capture_output=True,timeout=60)
+            if r.returncode or not target.is_file():raise HTTPException(404)
+        return FileResponse(target,media_type='image/jpeg',headers={'Cache-Control':'private, max-age=86400'})
 
     @app.post('/editor/jobs',status_code=202)
     def create(body:Timeline):

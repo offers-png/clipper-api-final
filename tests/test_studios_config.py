@@ -69,7 +69,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(set(routes(original)).issubset(set(routes(current))))
         before=subprocess.check_output(['git','show','origin/main:requirements.txt'],cwd=ROOT).decode().splitlines()
         after=(ROOT/'requirements.txt').read_text().splitlines()
-        self.assertEqual([line for line in before if not line.startswith(('yt-dlp==','curl-cffi=='))],
-                         [line for line in after if not line.startswith(('yt-dlp==','curl-cffi=='))])
+        # Pillow is added on purpose: color emoji pop-ups and editor text pictures.
+        allowed=('yt-dlp==','curl-cffi==','pillow')
+        self.assertEqual([line for line in before if not line.startswith(allowed)],
+                         [line for line in after if not line.startswith(allowed)])
 
 if __name__=='__main__':unittest.main(verbosity=2)
