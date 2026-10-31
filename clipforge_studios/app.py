@@ -6,7 +6,8 @@ from .backend.legacy import register as legacy
 from .backend.editor import register as editor
 from .backend.image_video import register as image_video
 from .backend.thumbnail_ai import register as thumbnail_ai
-legacy(app);editor(app);image_video(app);thumbnail_ai(app)
+from .backend.slideshow import register as slideshow
+legacy(app);editor(app);image_video(app);thumbnail_ai(app);slideshow(app)
 
 @app.get('/health')
 def health():
