@@ -56,7 +56,7 @@ def canonical(path):
 
 def resource_key(path):
     path=canonical(path)
-    match=re.match(r'^/(?:studio/(?:jobs|files|sources)|editor/(?:jobs|assets|files)|(?:image-video|video-generator)/jobs|thumbnail-ai/jobs|api/videos|local-original/(?:batches|assistant-jobs))/([a-f0-9]{32})(?:/|$)',path)
+    match=re.match(r'^/(?:studio/(?:jobs|files|sources)|editor/(?:jobs|assets|files)|(?:image-video|video-generator)/jobs|thumbnail-ai/jobs|slideshow/projects|api/videos|local-original/(?:batches|assistant-jobs))/([a-f0-9]{32})(?:/|$)',path)
     if match:return 'entity:'+match[1]
     if path.startswith(('/media/','/api/clips/')):return 'url:'+path
     return None
@@ -66,8 +66,10 @@ def metered(path):
 
 def analysis(path):
     """Transcription/analysis requests that cost OpenAI money (~$0.17 per new video) but make no clip:
-    their own daily allowance, never counted as clips. A batch of AI thumbnails (up to 6 images) counts as one."""
-    return path in ('/thumbnail-ai/jobs','/api/videos','/api/videos/url') or bool(re.fullmatch(r'/thumbnail-ai/jobs/[a-f0-9]{32}/ai-thumbnails',path))
+    their own daily allowance, never counted as clips. A batch of AI thumbnails (up to 6 images) counts as one,
+    as does a slideshow voiceover transcription or AI image match."""
+    return path in ('/thumbnail-ai/jobs','/api/videos','/api/videos/url','/slideshow/projects') or \
+        bool(re.fullmatch(r'/thumbnail-ai/jobs/[a-f0-9]{32}/ai-thumbnails|/slideshow/projects/[a-f0-9]{32}/match',path))
 
 def analysis_limit(plan):
     if plan=='trial':return int(os.getenv('CLIPFORGE_DAILY_ANALYSES_TRIAL','3'))
